@@ -67,58 +67,76 @@ tests/
 ## 5. Phase plan (no jumping ahead)
 
 **Phase 1 — data pipeline**
-- M0 Scaffold ✅ | M1 SDE→`sde.duckdb` ✅ | REPO git+push ✅ | M2 ESI client ✅ | M3 Order snapshots + `ingest_runs` ✅ | M4a ESI daily history → `market_history` ✅ | M4b everef.net bulk backfill ✅
-- **M5** Prices ingestion + scheduler + data-quality checks ← **CURRENT (awaiting Claude draft w/ Context Pack; likely split M5a/b/c)**
+- M0 Scaffold ✅ | M1 SDE→`sde.duckdb` ✅ | REPO git+push ✅ | M2 ESI client ✅ | M3 Order snapshots + `ingest_runs` ✅ | M4a ESI daily history → `market_history` ✅ | M4b everef.net bulk backfill ✅ | M5a ESI prices → `market_prices` ✅
+- **M5** Prices ✅ | scheduler (M5b) + data-quality (M5c) ← **CURRENT: M5b drafted (§6) — Codex to execute**
 
 **Phase 2 — deterministic analytics (stubbed):** `fees.py`, `opportunity.py` (ProfitOpportunity), `station_trade.py` (first scanner), then `haul.py`.
 
 Definition of done is per-step in each task prompt.
 
-## 6. Current Task (Codex) — M5a: ESI market prices ingestion → `market_prices`
+## 6. Current Task (Codex) — M5b: APScheduler wiring → recurring ingest jobs
 
-M4b DONE (§7). **M5 split → M5a (prices ingest, THIS) | M5b (APScheduler wiring, next) | M5c (data-quality checks, last).** This = M5a only: ESI `/markets/prices/` → DuckDB `market_prices` table. NO scheduler, NO quality checks, NO analytics. Mirror the M4a structure (model→schema→writer→ingest→CLI→tests→1 live run). **CLOSED-WORLD: write only the listed files; all you need is in the Context Pack. Missing detail → STOP + §9, do NOT scan the tree.**
+M5a DONE (§7). **M5 split → M5a (prices ingest) ✅ | M5b (APScheduler wiring, THIS) | M5c (data-quality checks, last).** This = M5b only: a `BlockingScheduler` that runs the ALREADY-BUILT ingests on a cadence (orders snapshot + prices), plus a CLI `schedule` command to start it. **NO new ingest logic, NO quality checks, NO analytics, NO history scheduling (deferred — see note).** **CLOSED-WORLD: write only the listed files; all you need is in the Context Pack. Missing detail → STOP + §9, do NOT scan the tree.**
 
 ### CONTEXT PACK
 
 **Files in scope (touch nothing else):**
-- EDIT `src/evemarket/esi/models.py` — add `MarketPrice` pydantic model.
-- EDIT `src/evemarket/store/schema.py` — add `market_prices` table in `ensure_market_db`.
-- EDIT `src/evemarket/store/writers.py` — add `write_prices`.
-- CREATE `src/evemarket/ingest/prices.py` — `ingest_prices(...)` + `PricesIngestResult`.
-- EDIT `src/evemarket/cli.py` — add `ingest-prices` command.
-- CREATE `tests/test_ingest_prices.py`.
+- CREATE `src/evemarket/scheduler.py` — `build_scheduler(...)`, `run_orders_job(...)`, `run_prices_job(...)`.
+- EDIT `src/evemarket/cli.py` — add `schedule` command (append a new `@app.command`; do NOT touch existing commands).
+- CREATE `tests/test_scheduler.py`.
 - EDIT `HANDOFF.md` §8 (log).
+- ALSO STAGE (already-modified, no further edits needed) `AGENTS.md` — the closed-world workflow paragraph is sitting uncommitted in the working tree; fold it into THIS commit to clear a loose end. Do not re-edit it.
 
-**ESI prices endpoint (researched live, verbatim):**
-- `client.get("/latest/markets/prices/")` — **public, GLOBAL (no region), NOT paginated** (one JSON array, ~16k entries). Cached (`Expires` header → `response.expires`).
-- Each entry: `{"type_id": int, "adjusted_price": float, "average_price": float}`. **`average_price` is OPTIONAL** (~12% of entries omit the key); `adjusted_price`/`type_id` present in practice but treat both prices as nullable-safe. Example: `{'adjusted_price': 33.248, 'average_price': 30.02, 'type_id': 18}`; a no-average entry omits the `average_price` key entirely.
+**APScheduler facts (installed `apscheduler 3.11.2` → 3.x API, verbatim — already a declared dep, do NOT add anything):**
+- `from apscheduler.schedulers.blocking import BlockingScheduler`. Construct `BlockingScheduler(timezone=pytz.utc)` (`import pytz`; already a dep).
+- Register jobs BEFORE start: `scheduler.add_job(func, "interval", minutes=N, args=[config], id="<id>", coalesce=True, max_instances=1, replace_existing=True)`.
+- `scheduler.get_jobs()` → list of `Job`; each `job.id` (str), `job.trigger` is an `IntervalTrigger` whose `job.trigger.interval` is a `datetime.timedelta`. Jobs can be added to a not-yet-started scheduler and inspected this way (no `.start()` needed for tests).
+- `scheduler.start()` BLOCKS the calling thread until shutdown; `scheduler.shutdown()` stops it. Tests must NEVER call `.start()`.
 
 **Caller contracts (verbatim — already exist, just call them):**
-- `evemarket.esi.client.ESIClient` — `async with ESIClient(config=config) as client:`; `await client.get(path: str, *, params=None) -> ESIResponse`. `ESIResponse` is a frozen dataclass: `data: Any` (parsed JSON = the list), `expires: datetime` (tz-aware UTC), `etag`, `pages: int|None`, `error_limit_remain`, `error_limit_reset`. Non-retryable ESI failure raises `evemarket.esi.client.ESIError`.
-- `evemarket.store.schema.ensure_market_db(path) -> duckdb.DuckDBPyConnection` — opens `market.duckdb`, `SET TimeZone='UTC'`, ensures tables; supports `with`. Add the new `market_prices` table here alongside existing `ingest_runs`/`market_history` (leave those unchanged).
-- `evemarket.store.writers.record_ingest_run(conn, **fields) -> None` — required keys `run_id, source, region_id, snapshot_ts, started_at, finished_at, status, order_count, pages`; optional (NULL default) `esi_expires, snapshot_path, error`. **`ingest_runs.region_id` is nullable BIGINT → pass `region_id=None` for global prices.** ts cols TIMESTAMPTZ → pass tz-aware UTC datetimes.
-- Pattern reference (already in writers.py): existing `write_history`/`_upsert_history_frame` show the explicit-polars-schema → TEMP duckdb table via `executemany` → `INSERT ... ON CONFLICT ... DO UPDATE` idempotent-upsert idiom. `write_prices` follows the SAME idiom with the prices schema/PK below.
-- `evemarket.config.Config` — `data_dir: Path` (market db = `config.data_dir.expanduser()/"market.duckdb"`). `load_config(path)`.
-- Existing ingest reference: `evemarket/ingest/history.py` `ingest_history` (async, success/fail `record_ingest_run` split, sample validation, injectable `now`) is the structural template — mirror it minus region/type loop (prices = single global call).
+- `evemarket.esi.client.ESIClient` — `async with ESIClient(config=config) as client: ...`. **Construction + `__aenter__`/`__aexit__` make NO network call** (confirmed M2 — httpx wrapper; network only on `.get(...)`), so tests that enter the context with an injected no-network ingest run fully offline.
+- `evemarket.ingest.orders.ingest_orders(client, config, region_id, *, now=None) -> IngestResult` — async; one regional order-book snapshot. `IngestResult` has `.run_id: str`, `.region_id: int`, `.order_count: int`, `.status: str`.
+- `evemarket.ingest.prices.ingest_prices(client, config, *, now=None) -> PricesIngestResult` — async; one global prices snapshot. `PricesIngestResult` has `.run_id: str`, `.price_count: int`, `.status: str`.
+- `evemarket.config.Config` — fields used: `tracked_regions: list[int]` (loop orders over these). `evemarket.config.load_config(path) -> Config`.
+- CLI pattern (mirror existing commands in `cli.py`): `@app.command("schedule")`, `--config/-c` default `Path("config.toml")` → `load_config(...)`. Imports `asyncio`, `typer`, `Path`, `load_config`, `ESIClient` already present at top of `cli.py`; add `from evemarket.scheduler import build_scheduler`.
 
 **Deliverables / decisions (do exactly this):**
-1. `MarketPrice` (pydantic `BaseModel`): `type_id: int`, `adjusted_price: float | None = None`, `average_price: float | None = None`.
-2. `market_prices` table: `type_id BIGINT, adjusted_price DOUBLE, average_price DOUBLE, snapshot_ts TIMESTAMPTZ, PRIMARY KEY (type_id, snapshot_ts)`. (Keyed by snapshot_ts so daily runs accumulate a price series; re-run with same `now` is idempotent.)
-3. `write_prices(conn, prices: list[dict], snapshot_ts: datetime) -> int` in writers.py — define explicit `PRICE_SCHEMA = {type_id: pl.Int64, adjusted_price: pl.Float64, average_price: pl.Float64, snapshot_ts: pl.Datetime(time_zone="UTC")}`. Normalize each entry to ALL keys (`adjusted_price`/`average_price` via `.get(...)` → None if absent) + add `snapshot_ts`; build polars DF strict on PRICE_SCHEMA (nulls allowed for both prices); TEMP-stage + `INSERT INTO market_prices ... ON CONFLICT (type_id, snapshot_ts) DO UPDATE SET adjusted_price=EXCLUDED.adjusted_price, average_price=EXCLUDED.average_price`. Empty list → return 0. Return rows upserted (frame height).
-4. `ingest/prices.py`: `PricesIngestResult` (frozen dataclass: `run_id: str, price_count: int, status: str, esi_expires: datetime | None, snapshot_ts: datetime`). `async def ingest_prices(client, config, *, now=None) -> PricesIngestResult`: `snapshot_ts = now or utcnow` (tz-aware UTC); `run_id=uuid4`; `started_at`; `resp = await client.get("/latest/markets/prices/")`; `esi_expires = resp.expires`; `prices = list(resp.data)`; validate sample (first ≤50 via `MarketPrice.model_validate`); `with ensure_market_db(...)`: `price_count = write_prices(conn, prices, snapshot_ts)`; `record_ingest_run(status='success', source='esi_prices', region_id=None, snapshot_ts, started_at, finished_at, order_count=price_count, pages=1, esi_expires, snapshot_path=None)`. On any `ESIError`/write fail → fresh `ensure_market_db`, `record_ingest_run(status='failed', source='esi_prices', region_id=None, order_count=0, pages=1, error=str(exc), ...)` + re-raise. `now` injectable.
-5. CLI `ingest-prices` — `--config/-c` only (no region/type — global). Build `ESIClient`, `asyncio.run`, print status, run_id, price_count, esi_expires, snapshot_ts.
+1. **Module logger:** `LOGGER = logging.getLogger(__name__)` in `scheduler.py`.
+2. **`run_prices_job(config, *, ingest=ingest_prices) -> PricesIngestResult | None`** (sync; APScheduler calls sync job fns):
+   - Body: define inner `async def _run(): async with ESIClient(config=config) as client: return await ingest(client, config)`; `result = asyncio.run(_run())`; `LOGGER.info("prices job ok run_id=%s count=%s", result.run_id, result.price_count)`; return `result`.
+   - Wrap the whole body in `try/except Exception: LOGGER.exception("prices job failed"); return None`. **Job MUST swallow exceptions** so one failure doesn't kill the scheduler. The injectable `ingest` keyword is for offline tests (defaults to the real `ingest_prices`).
+3. **`run_orders_job(config, *, ingest=ingest_orders) -> list[IngestResult]`** (sync):
+   - Inner `async def _run(): results=[]; async with ESIClient(config=config) as client: for region in config.tracked_regions: results.append(await ingest(client, config, region)); return results`. `results = asyncio.run(_run())`; `LOGGER.info("orders job ok regions=%s", [r.region_id for r in results])`; return `results`.
+   - Same `try/except Exception: LOGGER.exception("orders job failed"); return []` swallow.
+4. **`build_scheduler(config, *, scheduler=None, orders_interval_minutes=5, prices_interval_minutes=60) -> BlockingScheduler`:**
+   - `sched = scheduler or BlockingScheduler(timezone=pytz.utc)`.
+   - `sched.add_job(run_orders_job, "interval", minutes=orders_interval_minutes, args=[config], id="orders", coalesce=True, max_instances=1, replace_existing=True)`.
+   - `sched.add_job(run_prices_job, "interval", minutes=prices_interval_minutes, args=[config], id="prices", coalesce=True, max_instances=1, replace_existing=True)`.
+   - Return `sched`. (Two jobs total: `orders`, `prices`. NO history job.)
+5. **CLI `schedule`** — opts `--config/-c` (Path, default `config.toml`); `--orders-interval` (int, default 5, help "Orders snapshot interval, minutes"); `--prices-interval` (int, default 60); `--dry-run/-n` (bool flag, default False). Flow: `cfg = load_config(config)`; `sched = build_scheduler(cfg, orders_interval_minutes=orders_interval, prices_interval_minutes=prices_interval)`; print one line per `sched.get_jobs()` → `f"Job {job.id}: {job.trigger}"`. If `--dry-run` → print "Dry run: scheduler not started." and RETURN (no `.start()`). Else → `typer.echo("Starting scheduler. Ctrl+C to stop.")`; `try: sched.start()` `except (KeyboardInterrupt, SystemExit): sched.shutdown()`.
 
-**Conventions to mirror:** explicit polars schema (no inference); idempotent upsert on PK (re-run same `now` = stable count, the KEY test); tz-aware UTC datetimes for TIMESTAMPTZ cols; sample-only validation (first ≤50, not all 16k); no new deps (`httpx`/`polars`/`duckdb`/`pydantic` already deps); terse; `data/`/`*.duckdb` stay untracked.
+**History scheduling DEFERRED (do NOT add):** scheduled history needs a "which type_ids to refresh daily" universe decision that is its own design task (M5c-adjacent). Out of scope for M5b. Do not wire `ingest_history` into the scheduler.
 
-**Constraints** — no new deps; don't change §4 locked decisions; `data/` untracked (gate `git status --short`). Blocked/missing-context → STOP, write §9.
+**Conventions to mirror:** jobs swallow+log exceptions (scheduler resilience); injectable `ingest` keyword for offline tests; UTC timezone on the scheduler (`pytz.utc`); no new deps (`apscheduler`/`pytz` already declared); terse; `data/`/`*.duckdb` stay untracked. Do NOT call `.start()` anywhere except the live (non-dry-run) CLI path.
+
+**Constraints** — no new deps; don't change §4 locked decisions; do NOT modify existing `cli.py` commands or any ingest/store module; `data/` untracked (gate `git status --short`). Blocked/missing-context → STOP, write §9.
 
 **Verification (paste §8, terse per §2):**
-- `python -m pytest -q` pass, network-free (MockTransport returns a prices array that INCLUDES ≥1 entry WITHOUT `average_price`, tmp `data_dir`, injected `now`): assert `market_prices` rows correct — `adjusted_price` set, `average_price` NULL for the no-average entry, `snapshot_ts` tz-aware UTC, types right; **re-run same `now` = no dupes** (row count stable); `ingest_runs` 1 `success` row `source='esi_prices'`, `region_id` NULL, `order_count`=price_count, `pages`=1; failure path → `failed` row, error set; existing M4/M3 tests stay green.
+- `python -m pytest -q` pass, network-free (NEVER call `.start()`):
+  - `build_scheduler(Config())` (or a `Config` with 1 tracked region) → `get_jobs()` has exactly 2 jobs, ids `{"orders","prices"}`; `orders` job `trigger.interval == timedelta(minutes=5)`, `prices` == `timedelta(minutes=60)`; custom intervals via params reflected.
+  - `run_prices_job(config, ingest=<fake async returning a stub PricesIngestResult>)` → returns that result, fake called once. Fake `ingest` that `raise`s → returns `None` (swallowed, no propagation).
+  - `run_orders_job(config-with-2-regions, ingest=<fake async>)` → fake called once per region, returns list len 2; raising fake → returns `[]`.
+  - Existing M5a/M4/M3 tests stay green.
 - `python -m ruff check .` clean.
-- One polite live run: `ingest-prices` vs ESI; paste printed summary + `SELECT count(*), count(average_price), count(adjusted_price), min(snapshot_ts) FROM market_prices` + the `ingest_runs` row (`source='esi_prices'`).
-- Pre-commit `git status --short`: no `data/`/`*.duckdb`/parquet staged. Commit `feat: ESI market prices ingestion → market_prices (M5a)`; `git push origin main` (no force). Include `HANDOFF.md`.
+- Live (non-network, non-hanging): `evemarket schedule --dry-run` → paste the 2 printed `Job ...: interval[...]` lines + "Dry run" line. (No real `.start()` in the handoff — it blocks. The underlying ingests are already proven live in M3/M5a.)
+- Pre-commit `git status --short`: no `data/`/`*.duckdb`/parquet staged (expect `scheduler.py`, `cli.py`, `tests/test_scheduler.py`, `AGENTS.md`, `HANDOFF.md`). Commit `feat: APScheduler recurring ingest jobs + schedule CLI (M5b)`; `git push origin main` (no force). Include `HANDOFF.md` + `AGENTS.md`.
 
-When done: append §8 entry (terse, **INCLUDE the commit hash**) and STOP. After M5a → M5b (APScheduler wiring).
+When done: append §8 entry (terse, **INCLUDE the commit hash**) and STOP. After M5b → M5c (data-quality checks).
+
+<!-- ===== M5a task (DONE, kept for reference) ===== -->
+### [DONE] M5a: ESI market prices ingestion → `market_prices`
+
+Endpoint `client.get("/latest/markets/prices/")` — public, GLOBAL, NOT paginated, ~16k entries `{type_id, adjusted_price, average_price}` (`average_price` optional). `MarketPrice` model (both prices `float|None`); `market_prices(type_id,adjusted_price,average_price,snapshot_ts, PK(type_id,snapshot_ts))`; `write_prices` explicit `PRICE_SCHEMA` + temp-stage `ON CONFLICT` upsert; async `ingest_prices` (`region_id=None`, source='esi_prices', sample-validate ≤50); CLI `ingest-prices`. Committed `9666724`. Full pack preserved in git history if needed.
 
 <!-- ===== M4b task (DONE, kept for reference) ===== -->
 ### [DONE] M4b: everef.net bulk backfill → `market_history`
@@ -220,6 +238,11 @@ When done: append §8 entry (terse, **INCLUDE the commit hash** — M3-FIX2 omit
 - **M4b REVIEW: DONE.** Read all M4b code (`backfill.py`,`writers.py` refactor,`cli.py`,test). Planner clean-env (bare `python`, all deps, NO manual installs): `pytest --basetemp <scratch>` → `19 passed,1 skipped`; `ruff` clean. Commit `e1ce7b2` (+`c0dc702` docs) present; `data/market.duckdb` ignored. All focus pts pass: explicit `EVEREF_CSV_SCHEMA`(date Utf8→`str.to_date`)+`HISTORY_SCHEMA`; region filter correct (test: other-region rows excluded, only 10000002 lands); `write_history` behavior preserved via extracted private `_upsert_history_frame` (M4a/M3 tests green); idempotent re-run stable; 404(`fetch→None`)→`days_missing`++ + success vs non-404→`failed` row+raise — both tested; `write_history_bulk` empty→0 guard; coexists w/ M4a rows in same table. Live: `2026-06-23..25`, days_fetched 2, days_missing 0, row_count 20046; DB region 10000002 count 20464 (M4a Tritanium history coexists, min date 2025-05-01), per-day 06-23=9773/06-24=10273; `everef_history` run row correct. **Low-pri note (my Context-Pack rule, no redo):** file present but 0 region rows → counted NEITHER fetched NOR missing (live `2026-06-25` hit this), so `days_fetched+days_missing` can be < range length. Self-healing (idempotent re-run picks it up once everef populates). Future tweak: add `days_empty` counter or treat present-but-empty as missing. Codex followed the rule exactly + flagged it. Minor: fetch-None/else loop bodies duplicated (style only). **LOOSE END:** `AGENTS.md` closed-world workflow edit left UNCOMMITTED (HANDOFF.md workflow edit WAS committed in `e1ce7b2`/`c0dc702`) — needs committing so Codex's repo-level instructions match. M0–M4 DONE.
 - **M5 split + M5a drafted (Context Pack).** M5 too big → M5a prices ingest (THIS) | M5b APScheduler wiring | M5c data-quality checks. Planner researched `/markets/prices/` live (`curl`): GLOBAL (no region), NOT paginated, `Expires`-cached, ~16071 entries; fields `{type_id, adjusted_price, average_price}` with **`average_price` OPTIONAL (~1981/16071 omit key)**, `adjusted_price`/`type_id` present. Confirmed `ESIResponse(data,expires,etag,pages,...)` contract from `esi/client.py`. M5a pack: new `market_prices(type_id,adjusted_price,average_price,snapshot_ts, PK(type_id,snapshot_ts))`, `MarketPrice` model (both prices `float|None`), `write_prices` (explicit `PRICE_SCHEMA`, normalize missing avg→None, temp-stage+ON CONFLICT upsert), async `ingest_prices`(single global call, `region_id=None` in ingest_runs source='esi_prices', sample-validate ≤50), CLI `ingest-prices`. Review focus on return: explicit schema, **null `average_price` handled** (test must include a no-average entry), idempotent re-run (same `now`=stable), `region_id` NULL in ingest_runs, sample-only validation, `data/` untracked, commit hash in §8.
 
+- **M5a REVIEW: DONE.** Read all M5a code (`models.py`,`schema.py`,`writers.py`,`prices.py`,`cli.py`,test). Planner clean-env (bare `python`, all deps, NO manual installs): `pytest --basetemp <scratch>` → `22 passed,1 skipped`; `ruff` clean. Commit `9666724` (+`ce7aeca` docs) pushed, nothing unpushed; only `AGENTS.md` dirty (known loose end). All focus pts pass: explicit `PRICE_SCHEMA`; **null `average_price` handled** — test asserts no-avg entry (type 34)→NULL AND null `adjusted_price` (type 35)→NULL (exceeds spec); `market_prices` PK(type_id,snapshot_ts); idempotent re-run same `now`→count stable 3, 2 success runs; `region_id` NULL in `ingest_runs` source='esi_prices'; sample-only validation (≤50); temp-stage+`ON CONFLICT` upsert mirrors `_upsert_history_frame`; `data/` untracked. Live: 16071 prices, 14090 w/ avg (~1981 omit, matches my research), `esi_prices` run region_id NULL/order_count 16071/pages 1 correct. No deviations. M0–M5a DONE. Next: M5b (APScheduler wiring).
+- **LOOSE END still open:** `AGENTS.md` closed-world workflow edit uncommitted across M4b/M5a (user deferred commit). Fold into M5b commit or a standalone `docs:` commit when user clears it.
+
+- **M5b drafted (Context Pack).** APScheduler wiring → recurring ingest jobs. Verified prerequisites against the live tree (no exploration debt left for Codex): `apscheduler 3.11.2` installed + declared in `pyproject.toml` (3.x `BlockingScheduler` API); `ingest_orders(client,config,region_id)`→`IngestResult(.run_id/.region_id/.order_count/.status)` and `ingest_prices(client,config)`→`PricesIngestResult(.run_id/.price_count/.status)` signatures read from source; `cli.py` already imports `asyncio`/`typer`/`Path`/`load_config`/`ESIClient`; `pytz` is a dep (scheduler tz). **Scope held tight:** new `scheduler.py` (`build_scheduler` + `run_orders_job`/`run_prices_job`, jobs swallow+log exceptions for resilience, injectable `ingest=` kwarg for offline tests) + CLI `schedule` (`--orders-interval`/`--prices-interval`/`--dry-run`) + offline test. **Two jobs only (orders+prices); history scheduling explicitly DEFERRED** (needs a "which type_ids daily" universe decision — its own task). Live verification = `schedule --dry-run` (lists 2 jobs, no `.start()`, no network, no hang) since the underlying ingests are already proven live (M3/M5a); tests MUST never call `.start()` (blocks). **M5b commit also clears the AGENTS.md loose end** (pack instructs Codex to stage the already-modified workflow paragraph). Review focus on return: exactly 2 jobs w/ correct interval triggers, jobs swallow exceptions (raising fake `ingest`→None/[]), injectable-ingest offline tests (no network, no `.start()`), no new deps, existing commands/tests untouched, `data/` untracked, commit hash + AGENTS.md in §8.
+
 ## 8. Execution Log (Codex)
 
 ### M0 — Scaffold — 2026-06-26 — COMPLETE
@@ -274,7 +297,18 @@ Pre-commit `git status --short`: `AGENTS.md` + `HANDOFF.md` pre-existing/new han
 Deviations: used bundled Python absolute path; live run required network escalation. `AGENTS.md` still modified/uncommitted loose end from workflow update, not touched/staged (outside M5a scope). Questions: none.
 Template: `### M<n> — <title> — <date> — COMPLETE/BLOCKED` then: Files | Commands+result | Verification | Deviations | Questions.
 
+### M5b - APScheduler recurring ingest jobs + schedule CLI - 2026-06-26 - COMPLETE
+Files: `src/evemarket/scheduler.py`, `src/evemarket/cli.py`, `tests/test_scheduler.py`, `AGENTS.md`, `HANDOFF.md`. Commit: pending until commit creation.
+Implemented `build_scheduler` with exactly 2 interval jobs (`orders`, `prices`), UTC `BlockingScheduler`, coalesce/max_instances/replace_existing; sync `run_orders_job` + `run_prices_job` wrappers using `asyncio.run`, `ESIClient`, injectable `ingest=`, swallow+log exceptions; CLI `schedule` with `--orders-interval`, `--prices-interval`, `--dry-run`.
+Offline: bare `python -m pytest -q` failed (`python` not on PATH). Bundled Python: `...\python.exe -m pytest -q -p no:cacheprovider --basetemp .pytest-tmp` -> `28 passed, 1 skipped in 3.12s`. `...\python.exe -m ruff check .` -> `All checks passed!`.
+Dry-run: `...\Scripts\evemarket.exe schedule --dry-run` -> `Job orders: interval[0:05:00]`; `Job prices: interval[1:00:00]`; `Dry run: scheduler not started.`
+Tests added: scheduler has ids `{"orders","prices"}` + 5/60 minute intervals; custom intervals reflected; prices fake called once and returned; prices raising fake -> `None`; orders fake called once per configured region and returned len 2; orders raising fake -> `[]`; no `.start()`.
+Pre-commit `git status --short`: `AGENTS.md`, `HANDOFF.md`, `src/evemarket/cli.py`, `src/evemarket/scheduler.py`, `tests/test_scheduler.py`; no `data/`/`*.duckdb`/parquet staged.
+Deviations: used bundled Python absolute path; `git status` warned user global ignore inaccessible (`C:\Users\M0obo/.config/git/ignore` permission denied); no behavior impact. Questions: none.
+
 ## 9. Open Questions / Blockers
+
+- ~~**BLOCKED 2026-06-26 (Codex):** awaiting M5b Context Pack (§6 still held completed M5a pack).~~ **RESOLVED 2026-06-26 (Claude):** M5b Context Pack now in §6; M5a demoted to DONE reference. Codex unblocked — execute M5b.
 
 - **PII — RESOLVED 2026-06-26.** Codex had set `config.toml` contact to user's personal email in working tree (tracked, public repo); HEAD still had `REPLACE_ME` so email never pushed. User chose Discord `m0obot`; M2-COMMIT swapped it in, verified no email in tracked files (`rg` empty), committed+pushed `6da016f`.
 - **Deferred (non-blocking, M0):** switch `Config`/`SkillConfig` from `pydantic_settings.BaseSettings` to `pydantic.BaseModel` so TOML is sole config source (BaseSettings allows silent env-var overrides). Future small task.

@@ -15,6 +15,7 @@ from evemarket.ingest.backfill import backfill_history_everef
 from evemarket.ingest.history import ingest_history
 from evemarket.ingest.orders import ingest_orders
 from evemarket.ingest.prices import ingest_prices
+from evemarket.scheduler import build_scheduler
 from evemarket.sde.load import connect, download_sde, load_sde, table_counts
 
 app = typer.Typer(help="EVE Market Tool.")
@@ -305,3 +306,51 @@ def ingest_prices_command(
 async def _run_ingest_prices(config):
     async with ESIClient(config=config) as client:
         return await ingest_prices(client, config)
+
+
+@app.command("schedule")
+def schedule_command(
+    config: Path = typer.Option(
+        Path("config.toml"),
+        "--config",
+        "-c",
+        help="Path to a TOML configuration file.",
+    ),
+    orders_interval: int = typer.Option(
+        5,
+        "--orders-interval",
+        help="Orders snapshot interval, minutes",
+    ),
+    prices_interval: int = typer.Option(
+        60,
+        "--prices-interval",
+        help="Prices snapshot interval, minutes",
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        "-n",
+        help="List jobs without starting the scheduler.",
+    ),
+) -> None:
+    """Start recurring ingest jobs."""
+
+    loaded_config = load_config(config)
+    sched = build_scheduler(
+        loaded_config,
+        orders_interval_minutes=orders_interval,
+        prices_interval_minutes=prices_interval,
+    )
+
+    for job in sched.get_jobs():
+        typer.echo(f"Job {job.id}: {job.trigger}")
+
+    if dry_run:
+        typer.echo("Dry run: scheduler not started.")
+        return
+
+    typer.echo("Starting scheduler. Ctrl+C to stop.")
+    try:
+        sched.start()
+    except (KeyboardInterrupt, SystemExit):
+        sched.shutdown()

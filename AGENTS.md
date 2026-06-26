@@ -53,6 +53,8 @@ No Git history is present yet, so use concise imperative commit subjects such as
 
 `HANDOFF.md` is the source of truth for agent coordination. Claude plans and reviews; Codex implements only the current task, verifies it, appends an execution log entry, then stops for review.
 
+**Codex works closed-world — write code, don't explore.** Each task in `HANDOFF.md` §6 ships a self-contained **Context Pack** (caller contracts, data shapes, conventions, files-in-scope) assembled by Claude. Codex's entire job is to write the code for the files named in that pack. Do **not** scan, grep, or read other files in the workspace to gather context — everything needed is in the pack. The only files Codex opens are the ones it writes/edits. If a symbol, signature, or detail you need is missing from the pack, do **not** go find it yourself: STOP and write the gap into §9, then wait. Running `pytest`/`ruff` (which import the whole package) for verification is expected and fine — that is mechanical verification, not context exploration.
+
 ## Security & Configuration Tips
 
 Replace the `REPLACE_ME` contact in `user_agent` before using ESI. Do not commit generated data, DuckDB files, credentials, or local virtual environments.
