@@ -89,6 +89,22 @@ def write_history(
         for day in days
     ]
     frame = pl.DataFrame(rows, schema=HISTORY_SCHEMA, strict=True)
+    return _upsert_history_frame(conn, frame)
+
+
+def write_history_bulk(conn: duckdb.DuckDBPyConnection, rows: list[dict]) -> int:
+    """Upsert daily market history rows spanning multiple types/dates."""
+
+    if not rows:
+        return 0
+    frame = pl.DataFrame(rows, schema=HISTORY_SCHEMA, strict=True)
+    return _upsert_history_frame(conn, frame)
+
+
+def _upsert_history_frame(conn: duckdb.DuckDBPyConnection, frame: pl.DataFrame) -> int:
+    if frame.is_empty():
+        return 0
+
     conn.execute(
         """
         CREATE TEMP TABLE history_rows (

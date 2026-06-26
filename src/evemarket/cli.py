@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import typer
@@ -10,6 +11,7 @@ import typer
 from evemarket.config import load_config
 from evemarket.esi.client import ESIClient
 from evemarket.esi.models import MarketOrder
+from evemarket.ingest.backfill import backfill_history_everef
 from evemarket.ingest.history import ingest_history
 from evemarket.ingest.orders import ingest_orders
 from evemarket.sde.load import connect, download_sde, load_sde, table_counts
@@ -219,3 +221,60 @@ def ingest_history_command(
 async def _run_ingest_history(config, region: int, type_ids: list[int]):
     async with ESIClient(config=config) as client:
         return await ingest_history(client, config, region, type_ids)
+
+
+@app.command("backfill-history")
+def backfill_history_command(
+    config: Path = typer.Option(
+        Path("config.toml"),
+        "--config",
+        "-c",
+        help="Path to a TOML configuration file.",
+    ),
+    region: int | None = typer.Option(
+        None,
+        "--region",
+        help="EVE region ID. Defaults to the first configured tracked region.",
+    ),
+    start: str | None = typer.Option(
+        None,
+        "--start",
+        help="Start date, inclusive, as YYYY-MM-DD.",
+    ),
+    end: str | None = typer.Option(
+        None,
+        "--end",
+        help="End date, inclusive, as YYYY-MM-DD.",
+    ),
+) -> None:
+    """Backfill market history from everef.net static dumps."""
+
+    loaded_config = load_config(config)
+    selected_region = region or loaded_config.tracked_regions[0]
+    start_date, end_date = _parse_backfill_dates(start, end)
+    result = backfill_history_everef(
+        loaded_config,
+        selected_region,
+        start_date,
+        end_date,
+    )
+
+    typer.echo(f"Region: {result.region_id}")
+    typer.echo(f"Status: {result.status}")
+    typer.echo(f"Run ID: {result.run_id}")
+    typer.echo(f"Start: {result.start_date}")
+    typer.echo(f"End: {result.end_date}")
+    typer.echo(f"Days fetched: {result.days_fetched}")
+    typer.echo(f"Days missing: {result.days_missing}")
+    typer.echo(f"Row count: {result.row_count}")
+
+
+def _parse_backfill_dates(start: str | None, end: str | None) -> tuple[date, date]:
+    if start is None and end is None:
+        end_date = (datetime.now(timezone.utc) - timedelta(days=1)).date()
+        return end_date - timedelta(days=2), end_date
+
+    if start is None or end is None:
+        raise typer.BadParameter("--start and --end must be provided together.")
+
+    return date.fromisoformat(start), date.fromisoformat(end)
