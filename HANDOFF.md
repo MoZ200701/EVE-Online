@@ -6,17 +6,25 @@ Shared source of truth between two AI agents. Append-mostly. Read fully before a
 
 ## 1. Roles
 
-- **Claude (Opus) — Planner/Debugger.** Plans steps, writes task prompts, reviews Codex output, diagnoses bugs, decides DONE/REDO. Does NOT write production code (only debug patches).
-- **GPT‑5.5 (Codex) — Executor.** Implements the *current task only*, writes code+tests, verifies, reports. Does NOT re-plan, expand scope, skip ahead, or invent architecture.
+- **Claude (Opus) — Planner/Debugger + Context-assembler.** Plans steps, writes task prompts, reviews Codex output, diagnoses bugs, decides DONE/REDO. Does NOT write production code (only debug patches). **Owns ALL workspace exploration:** reads the tree, pins down cross-file contracts / data shapes / conventions, and packs them into each §6 task as a self-contained **Context Pack** so Codex never has to scan the repo.
+- **GPT‑5.5 (Codex) — Executor (closed-world).** Writes the code for the files named in the current task's Context Pack — nothing else. Does NOT explore the workspace for context (no scanning/grepping/reading other files to "understand" the codebase), re-plan, expand scope, skip ahead, or invent architecture. Everything it needs is in the pack; if a symbol/signature/detail is missing, STOP + write §9 — do NOT go find it. Running `pytest`/`ruff` for verification is fine (mechanical, not exploration).
 
-One step at a time. Codex executes current task → logs §8 → STOPS. Claude reviews → DONE/REDO + next prompt in §6. No batching milestones.
+One step at a time. Claude packs context → Codex writes the named files → logs §8 → STOPS. Claude reviews → DONE/REDO + next prompt in §6. No batching milestones.
 
 ## 2. Update protocol
 
-- Codex: after a task, append §8 entry (files changed, commands+result, verification pass/fail, deviations/questions), then STOP.
+- Claude: every §6 task MUST open with a **Context Pack** (see template below) — all cross-file contracts/shapes/conventions Codex needs, so it writes blind to the rest of the tree. If the pack is incomplete, that's a planner bug, not a Codex excuse to explore.
+- Codex: write ONLY the files named in the pack. Do not read/scan other files for context. After a task, append §8 entry (files changed, commands+result, verification pass/fail, deviations/questions), then STOP. Missing context → STOP + §9.
 - Claude: after review, append §7 verdict + put next task in §6.
 - Never delete log history; correct via new entry. If blocked, write §9 and stop.
 - **Style rule (terse / "caveman"):** this file is AI↔AI only — no prose, no filler, no human niceties. Write entries as dense bullets/fragments. Keep load-bearing facts (commands, results, file paths, commit hashes, IDs, verdicts) verbatim; drop everything else. Periodically compact (collapse done tasks, strip duplicate dumps) rather than letting it grow.
+
+**Context Pack template (Claude fills, opens every §6 task):**
+- **Files in scope** — exact list to create/edit. For files being EDITED, paste current relevant contents/signatures so Codex doesn't guess. Codex touches nothing else.
+- **Caller contracts** — verbatim signature + 1-line semantics of every cross-file symbol the task calls (functions, classes, config fields, exceptions). Not whole files — just what's invoked.
+- **Data shapes** — exact JSON/dict structure + key types for any external/inter-module data the code handles.
+- **Conventions to mirror** — project-specific rules in play (explicit polars schema, UTC `TIMESTAMPTZ`, no new deps, terse, etc.).
+- **Boundary** — "Do not read/scan files outside this pack. Missing detail → STOP + §9."
 
 ## 3. Project overview (cold-start)
 
@@ -59,17 +67,67 @@ tests/
 ## 5. Phase plan (no jumping ahead)
 
 **Phase 1 — data pipeline**
-- M0 Scaffold ✅ | M1 SDE→`sde.duckdb` ✅ | REPO git+push ✅ | M2 ESI client ✅ | M3 Order snapshots + `ingest_runs` ✅
-- **M4a** ESI daily history → `market_history` table ← **CURRENT** | M4b everef.net bulk backfill (next)
+- M0 Scaffold ✅ | M1 SDE→`sde.duckdb` ✅ | REPO git+push ✅ | M2 ESI client ✅ | M3 Order snapshots + `ingest_runs` ✅ | M4a ESI daily history → `market_history` ✅
+- **M4b** everef.net bulk backfill ← **CURRENT (awaiting Claude draft w/ Context Pack)**
 - M5 Prices ingestion + scheduler + data-quality checks
 
 **Phase 2 — deterministic analytics (stubbed):** `fees.py`, `opportunity.py` (ProfitOpportunity), `station_trade.py` (first scanner), then `haul.py`.
 
 Definition of done is per-step in each task prompt.
 
-## 6. Current Task (Codex) — M4a: ESI daily history ingestion → `market_history`
+## 6. Current Task (Codex) — M4b: everef.net bulk backfill → `market_history`
 
-M3 fully DONE (signed off §7). This = M4a only: ESI daily market history → DuckDB table. everef.net bulk backfill is **M4b (NEXT, NOT now)**. Execute exactly this — no everef, no prices(M5), no scheduler, no analytics.
+M4a DONE (§7). M4b = bulk historical backfill of daily market history from everef.net static dumps → SAME `market_history` table (idempotent upsert, overlaps M4a rows fine). Execute exactly this — no prices(M5), no scheduler, no analytics, no new ESI work. **CLOSED-WORLD: write only the files listed; everything you need is in the Context Pack below. Missing detail → STOP + §9, do NOT scan the tree.**
+
+### CONTEXT PACK
+
+**Files in scope (touch nothing else):**
+- CREATE `src/evemarket/ingest/backfill.py` — `backfill_history_everef(...)` + `BackfillResult`.
+- EDIT `src/evemarket/store/writers.py` — add `write_history_bulk`; refactor existing `write_history` to share a private upsert helper (behavior-preserving — M4a tests MUST stay green).
+- EDIT `src/evemarket/cli.py` — add `backfill-history` command.
+- CREATE `tests/test_backfill_history.py`.
+- EDIT `HANDOFF.md` §8 (log).
+
+**everef data source (researched, verbatim):**
+- URL pattern: `https://data.everef.net/market-history/{YYYY}/market-history-{YYYY-MM-DD}.csv.bz2` (year subdir = the date's year). bz2-compressed CSV, ONE file per day = ALL regions & ALL types (~53.7k rows/day). Decompress with stdlib `bz2`. Same data as ESI `/history/` but full history (no ~13mo cap).
+- CSV header (exact order): `average,date,highest,lowest,order_count,volume,http_last_modified,region_id,type_id`
+- Sample row: `1.88,2025-06-15,1.88,1.88,24,2034687,2025-06-16T11:01:54Z,10000001,34`
+- `date` = `YYYY-MM-DD`. `http_last_modified` = ISO ts metadata → **DROP** (not in our table). Filter to ONE region via `region_id == <region>`.
+- A given day file may be ABSENT (HTTP 404) → that's normal, skip it (count it), do NOT fail the run.
+
+**Caller contracts (verbatim — already exist, just call them):**
+- `evemarket.store.schema.ensure_market_db(path: str|Path) -> duckdb.DuckDBPyConnection` — opens `market.duckdb`, `SET TimeZone='UTC'`, ensures `ingest_runs` + `market_history` tables. Supports `with` (context-managed). Table `market_history(region_id BIGINT, type_id BIGINT, date DATE, average DOUBLE, highest DOUBLE, lowest DOUBLE, order_count BIGINT, volume BIGINT, PRIMARY KEY(region_id,type_id,date))`.
+- `evemarket.store.writers.record_ingest_run(conn, **fields) -> None` — INSERTs one `ingest_runs` row. Required keys: `run_id, source, region_id, snapshot_ts, started_at, finished_at, status, order_count, pages`. Optional (default NULL): `esi_expires, snapshot_path, error`. (`ingest_runs` ts cols are TIMESTAMPTZ — pass tz-aware UTC datetimes.)
+- Existing `evemarket.store.writers.write_history(conn, region_id, type_id, days: list[dict]) -> int` — builds polars DF on `HISTORY_SCHEMA`, stages into a TEMP duckdb table via `executemany`, then `INSERT INTO market_history ... ON CONFLICT (region_id,type_id,date) DO UPDATE SET ...`. **Refactor:** extract its temp-stage+upsert body into private `_upsert_history_frame(conn, frame: pl.DataFrame) -> int` (frame cols exactly = `HISTORY_SCHEMA` order); `write_history` builds its frame then calls it; new `write_history_bulk` does the same with multi-(type,date) rows. Keep `write_history`'s public behavior identical.
+- `HISTORY_SCHEMA` (already in writers.py) = `{date: pl.Date, average: pl.Float64, highest: pl.Float64, lowest: pl.Float64, order_count: pl.Int64, volume: pl.Int64, region_id: pl.Int64, type_id: pl.Int64}`.
+- `evemarket.config.Config` fields used: `data_dir: Path` (market db = `config.data_dir.expanduser()/"market.duckdb"`), `user_agent: str` (send as `User-Agent` header on downloads), `tracked_regions: list[int]` (CLI default region = `[0]`). `load_config(path)->Config`.
+- CLI pattern: Typer `@app.command("backfill-history")`, `--config/-c` default `Path("config.toml")`, `--region` default None→`load_config(...).tracked_regions[0]`. (No ESIClient — everef is plain static files, sync.)
+
+**Deliverables / decisions (do exactly this):**
+1. `BackfillResult` dataclass (frozen): `run_id: str, region_id: int, start_date: date, end_date: date, days_fetched: int, days_missing: int, row_count: int, status: str`.
+2. `def backfill_history_everef(config, region_id, start_date: date, end_date: date, *, fetch=None, sleep=None, now=None) -> BackfillResult` — **sync** (not async).
+   - Injectables for offline test: `fetch: Callable[[str], bytes | None]` (returns raw bz2 bytes, or `None` for HTTP 404/missing → skip); `sleep: Callable[[float], None]` (politeness delay between files, default `time.sleep`, ~0.5s); `now` → snapshot_ts (default `datetime.now(timezone.utc)`).
+   - Default `fetch`: `httpx.Client` GET with `User-Agent: config.user_agent`; status 404 → return `None`; other non-2xx → `resp.raise_for_status()`; return `resp.content`.
+   - Flow: `run_id=uuid4`; `started_at=now_utc`; iterate dates `start_date..end_date` inclusive; build URL; `raw = fetch(url)`; if `None` → `days_missing += 1`, continue; else `data = bz2.decompress(raw)`; parse with polars `pl.read_csv(io.BytesIO(data), schema_overrides=EVEREF_CSV_SCHEMA)` (explicit schema, NO inference — define `EVEREF_CSV_SCHEMA` for all 9 cols; read `date` as `pl.Utf8` then `.with_columns(pl.col("date").str.to_date("%Y-%m-%d"))`); `.filter(pl.col("region_id")==region_id)`; select the 8 `HISTORY_SCHEMA` cols in order; if non-empty collect its `.to_dicts()` into the accumulator and `days_fetched += 1`; `sleep(delay)` between files.
+   - After loop: open `with ensure_market_db(...)`; `row_count = write_history_bulk(conn, all_rows)` (0 if none); `record_ingest_run(status='success', source='everef_history', region_id, snapshot_ts=now, started_at, finished_at=now_utc, order_count=row_count, pages=days_fetched, esi_expires=None, snapshot_path=None)`. Return success `BackfillResult`.
+   - On ANY exception (after a non-404 fetch error / decompress / parse / write): open a fresh `ensure_market_db`, `record_ingest_run(status='failed', source='everef_history', order_count=0, pages=days_fetched, error=str(exc), esi_expires=None, snapshot_path=None, ...)`, re-raise. (404→None is NOT an error.)
+3. `write_history_bulk(conn, rows: list[dict]) -> int` in writers.py — rows carry the 8 `HISTORY_SCHEMA` keys (`date` already a `datetime.date`); build polars DF on `HISTORY_SCHEMA` (strict), call shared `_upsert_history_frame`. Return rows upserted (frame height). Empty rows → return 0 (no-op, don't crash).
+4. CLI `backfill-history` — opts `--config`, `--region` (default first tracked), `--start`/`--end` as `YYYY-MM-DD` strings (parse to `date`). If BOTH omitted → polite default: `end = (utcnow - 1 day).date()` (yesterday UTC; today's file may not exist yet), `start = end - 2 days` (3 files). Call `backfill_history_everef`; print region, status, run_id, start, end, days_fetched, days_missing, row_count.
+
+**Conventions to mirror:** explicit polars schemas (no inference); idempotent upsert on PK (re-run = stable count, the KEY test); tz-aware UTC datetimes for `ingest_runs`; no new deps (`bz2`,`csv`,`io`,`time` stdlib; `httpx`,`polars`,`duckdb` already deps); terse; `data/`/`*.duckdb`/parquet stay untracked.
+
+**Constraints** — no new deps; don't change §4 locked decisions; `data/` untracked (gate `git status --short`). Blocked/missing-context → STOP, write §9.
+
+**Verification (paste §8, terse per §2):**
+- `python -m pytest -q` pass, network-free (inject `fetch` returning in-memory bz2 bytes, inject `sleep` no-op, tmp `data_dir`, injected `now`): build bz2 CSV with 2 dates incl rows for `10000002` AND another region → assert `market_history` has ONLY region `10000002` rows w/ correct values+types (date=`pl.Date`, floats/ints right); **re-run same range = no dupes** (row count stable); `ingest_runs` 1 `success` row `source='everef_history'`, `order_count`=rows, `pages`=days_fetched; a 404 date (fetch→None) → `days_missing` increments, run still `success`; a non-404 fetch error → `failed` row (error set) + raises; existing M4a + M3 tests stay green.
+- `python -m ruff check .` clean.
+- One polite live run: `backfill-history` (default 3-day range) vs Forge; paste printed summary + `SELECT count(*), min(date), max(date) FROM market_history WHERE region_id=10000002` + the `ingest_runs` row (`source='everef_history'`).
+- Pre-commit `git status --short`: no `data/`/`*.duckdb`/parquet staged. Commit `feat: everef.net bulk market-history backfill → market_history (M4b)`; `git push origin main` (no force). Include `HANDOFF.md`.
+
+When done: append §8 entry (terse, **INCLUDE the commit hash**) and STOP. After M4b → M5 (prices + scheduler + data-quality).
+
+<!-- ===== M4a task (DONE, kept for reference) ===== -->
+### [DONE] M4a: ESI daily history ingestion → `market_history`
 
 Endpoint: `client.get("/latest/markets/{region_id}/history/", params={"type_id": tid})` — public, NOT paginated (one JSON array per type). Each day row: `date` (`YYYY-MM-DD`), `average`, `highest`, `lowest` (float ISK), `order_count` (int), `volume` (int). ~13 months/type.
 
@@ -113,6 +171,8 @@ When done: append §8 entry (terse, **INCLUDE the commit hash** — M3-FIX2 omit
 - **M3-FIX REVIEW: REDO (hidden dep).** Schema fix correct (4 `TIMESTAMPTZ`, `SET TimeZone='UTC'`), committed `c1dacf8`, tree clean, read-back test good. But Codex verification INVALID: `13 passed` only b/c manual `pip install pytz` (noted §8, never declared in `pyproject.toml`). Planner clean-env `python -m pytest -q` → `1 failed, 12 passed, 1 skipped`: `InvalidInputException: Required module 'pytz' failed to import` at TIMESTAMPTZ `fetchone()` (L143). DuckDB needs pytz to read tz cols → Python; writes OK (failed-row insert passes). Latent crash for M4/M5/quality/analytics (all read `ingest_runs`) on fresh install. Fix → M3-FIX2 (§6): declare pytz dep (planner sign-off; §4 deps line updated). Process note for Codex: "no new deps" means STOP+flag in §9 if you need one — never silently `pip install` to make tests pass. M4 held until suite green in clean env. M0–M2 stay DONE.
 - **M3-FIX2 DONE — M3 fully COMPLETE.** `pytz` declared in `pyproject.toml` deps (L17); committed `c228ca9`, pushed (no unpushed, tree clean). Planner verified in the SAME env that failed before: fresh `pip install -e .` pulled `pytz 2026.2` (transitive via declared dep, not manual), then `python -m pytest -q` → `13 passed, 1 skipped`. Clean-env regression closed. Codex §8 omitted the commit hash (minor log gap) but commit exists + pushed. **M3 (order ingestion + UTC TIMESTAMPTZ + pytz) signed off DONE.** Next: M4 (history ingestion + everef backfill).
 - **M4 drafted (split M4a/M4b).** Milestone "history + everef" too big for one step → M4a = ESI daily history → DuckDB `market_history` (PK region+type+date, idempotent upsert, sample-only `MarketHistoryDay` validation, `ingest_runs` source='esi_history', CLI `ingest-history`, offline+1 polite live run); M4b = everef.net bulk backfill (next). History → DuckDB table NOT parquet (§4). Review focus on return: explicit polars schema, idempotent re-run (no dupes is the key test), date parse, failed-run row, history in DuckDB not parquet, `data/` untracked, AND commit hash present in §8 (chased Codex on this).
+- **M4a REVIEW: DONE.** Read all M4a code (`models.py`,`schema.py`,`writers.py`,`history.py`,`cli.py`,test). Planner clean-env (bare `python`, all deps present, NO manual installs — M3-FIX2 trap closed): `pytest --basetemp <scratch>` → `16 passed,1 skipped`; `ruff` clean. All focus pts pass: explicit `HISTORY_SCHEMA` polars (strict); idempotent via `ON CONFLICT (region,type,date) DO UPDATE` — test confirms count stable=2 across 2 runs; `date` str→`pl.Date` (`date.fromisoformat`); `market_history` in DuckDB not parquet; failed path → `failed` row, order_count=0, error set (test asserts `HTTP 400`); `data/` untracked (`git status` clean, `check-ignore data/market.duckdb`=`.gitignore:1:data/`); commit `b51e885` present in §8 (+ `afac067` docs log). Live: Tritanium 420 days `2025-05-01..2026-06-24`, success `ingest_runs` row correct. **Deviations (accepted, Codex-flagged):** (a) `conn.register(polars_df)` needs `pyarrow` (new dep, disallowed) → staged explicit-schema rows into TEMP duckdb table via `executemany` then set-based `ON CONFLICT` upsert. Literal "no row-by-row" bent for the temp-stage insert, but net upsert is set-based + idempotent + zero new dep = right call. If M5/analytics wants true bulk polars↔duckdb, revisit declaring `pyarrow` (planner sign-off) then. (b) added `.pytest-tmp/` to `.gitignore` — fine. **Low-pri note (no redo):** writes autocommit per-stmt → mid-loop type failure leaves earlier types' upserts persisted while run logs `failed`/order_count=0; not required atomic (idempotent re-run heals). M0–M3 stay DONE. **WORKFLOW CHANGE this session:** §1/§2 + AGENTS.md now mandate closed-world Codex + Claude-authored Context Pack per §6 task — M4b is the first task drafted in that format.
+- **M4b drafted (first Context-Pack task).** everef.net bulk backfill → `market_history`. Planner researched the source live: URL `data.everef.net/market-history/{YYYY}/market-history-{YYYY-MM-DD}.csv.bz2`, bz2 CSV, 1 file/day = ALL regions (~53.7k rows/day); confirmed header verbatim `average,date,highest,lowest,order_count,volume,http_last_modified,region_id,type_id` by pulling+decompressing `2025-06-15` (`bz2`). Pack pins: files-in-scope (new `ingest/backfill.py`, edit `writers.py`+`cli.py`, new test), everef format, caller contracts (`ensure_market_db`/`record_ingest_run`/`write_history`/`HISTORY_SCHEMA`/`Config`). Design: SYNC (no ESIClient — static files), injectable `fetch`(bytes|None, None=404-skip)/`sleep`/`now`; filter to one region; drop `http_last_modified`; refactor `write_history` to share private `_upsert_history_frame` + add `write_history_bulk` (M4a tests must stay green); 1 `ingest_runs` row source='everef_history' (pages=days_fetched, esi_expires NULL); 404→skip (days_missing, still success), non-404 err→failed+raise; CLI `backfill-history --region/--start/--end` default polite 3-day range (end=yesterday UTC). Review focus on return: explicit polars schema, region filter correct, idempotent re-run (no dupes = key test), `write_history` behavior unchanged, 404-skip vs hard-fail split, history in DuckDB, `data/` untracked, commit hash in §8.
 
 ## 8. Execution Log (Codex)
 
@@ -147,6 +207,16 @@ Live: `...\Scripts\evemarket.exe ingest-history --type 34` -> Region `10000002`,
 DuckDB: `SELECT type_id, count(*), min(date), max(date) FROM market_history GROUP BY type_id` -> `[(34, 420, 2025-05-01, 2026-06-24)]`. Latest `ingest_runs` history row -> `('546c78f2-1f2b-48bc-9c8f-e459c62e89b7','esi_history',10000002,1,420,'success',2026-06-26 11:05:00+00:00,NULL,NULL)`.
 Pre-commit `git status --short`: `.gitignore`, source files, `tests/test_ingest_history.py`, `HANDOFF.md`; no `data/`/`*.duckdb`/parquet staged; `git check-ignore -v data\market.duckdb` -> `.gitignore:1:data/`.
 Deviations: no new deps allowed; DuckDB `register(polars_df)` required absent `pyarrow`, so writer stages explicit-schema Polars rows into temp DuckDB table then upserts set-wise. Added `.pytest-tmp/` to `.gitignore`; Windows denied deleting generated basetemp. Used bundled Python absolute path; live run required network escalation. Questions: none.
+### M4b — everef.net bulk history backfill -> market_history — 2026-06-26 — COMPLETE
+Files: `src/evemarket/ingest/backfill.py`, `src/evemarket/store/writers.py`, `src/evemarket/cli.py`, `tests/test_backfill_history.py`, `HANDOFF.md`. Commit: `e1ce7b2`.
+Workflow: closed-world honored; opened/edited only files named in Context Pack plus `AGENTS.md`/`HANDOFF.md` initial user-requested workflow read; did not scan tree for context.
+Implemented sync `backfill_history_everef`; `BackfillResult`; Everef URL builder; bz2 decompress; explicit `EVEREF_CSV_SCHEMA`; region filter; `write_history_bulk`; shared `_upsert_history_frame`; CLI `backfill-history` with default 3-day UTC-yesterday range.
+Offline: bare `python -m pytest -q` failed (`python` not on PATH). Bundled Python: `...\python.exe -m pytest -q -p no:cacheprovider --basetemp .pytest-tmp` -> `19 passed, 1 skipped in 2.31s`. `...\python.exe -m ruff check .` -> `All checks passed!`.
+Tests added: in-memory bz2 CSV, 2 dates + other-region rows -> only `10000002` rows; DuckDB types `DATE`/`DOUBLE`/`BIGINT`; rerun same range row count stable; 404 (`fetch->None`) increments `days_missing` and success; non-404 fetch error raises + records `failed` row; M4a/M3 tests still green.
+Live: `...\Scripts\evemarket.exe backfill-history` -> Region `10000002`, Status `success`, Run ID `e7c4c351-79e2-442c-90c0-d0d865a2caab`, Start `2026-06-23`, End `2026-06-25`, Days fetched `2`, Days missing `0`, Row count `20046`.
+DuckDB: `SELECT count(*), min(date), max(date) FROM market_history WHERE region_id=10000002` -> `[(20464, 2025-05-01, 2026-06-24)]`; date counts for live range -> `[(2026-06-23, 9773), (2026-06-24, 10273)]`; latest `everef_history` run -> `('e7c4c351-79e2-442c-90c0-d0d865a2caab','everef_history',10000002,2,20046,'success',NULL,NULL,NULL)`.
+Pre-commit `git status --short`: `AGENTS.md` + `HANDOFF.md` pre-existing workflow edits; scoped source/test files; no `data/`/`*.duckdb`/parquet staged; `git check-ignore -v data\market.duckdb` -> `.gitignore:1:data/`.
+Deviations: live default range file `2026-06-25` was present but yielded no Forge rows, so not counted fetched or missing by Context Pack rule (`days_fetched += 1` only when rows non-empty). Used bundled Python absolute path; live run required network escalation. Questions: none.
 Template: `### M<n> — <title> — <date> — COMPLETE/BLOCKED` then: Files | Commands+result | Verification | Deviations | Questions.
 
 ## 9. Open Questions / Blockers
