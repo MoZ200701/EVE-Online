@@ -1,0 +1,19 @@
+# EVE Market Tool configuration.
+# Replace the contact placeholder with an email, Discord handle, or other reachable contact.
+user_agent = "eve-market-tool/0.1 (contact: REPLACE_ME)"
+
+# The Forge only for M0/M1 startup scope.
+tracked_regions = [10000002]
+home_hub_station_id = 60003760
+
+# Runtime data is written under this directory.
+data_dir = "./data"
+
+standings_factional = 0.0
+standings_corp = 0.0
+capital_isk = 1000000000
+cargo_m3 = 5000.0
+
+[skills]
+accounting = 0
+broker_relations = 0

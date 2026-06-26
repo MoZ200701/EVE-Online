@@ -1,0 +1,3 @@
+"stationID","security","dockingCostPerVolume","maxShipVolumeDockable","officeRentalCost","operationID","stationTypeID","corporationID","solarSystemID","constellationID","regionID","stationName","x","y","z","reprocessingEfficiency","reprocessingStationsTake","reprocessingHangarFlag"
+60003760,0.9,0,0,0,0,0,0,30000142,20000020,10000002,"Jita IV - Moon 4 - Caldari Navy Assembly Plant",0,0,0,0.5,0.05,4
+60008494,0.7,0,0,0,0,0,0,30002187,20000322,10000043,"Amarr VIII (Oris) - Emperor Family Academy",0,0,0,0.5,0.05,4

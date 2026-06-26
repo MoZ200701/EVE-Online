@@ -1,0 +1,4 @@
+"typeID","groupID","typeName","description","mass","volume","capacity","portionSize","raceID","basePrice","published","marketGroupID","iconID","soundID","graphicID","factionID","metaLevel","shipTreeGroupID"
+34,18,"Tritanium","Basic mineral",0,0.01,0,1,,6,true,1857,,,,,,
+35,18,"Pyerite","Basic mineral",0,0.01,0,1,,12,true,1857,,,,,,
+999999,1,"Unpublished Test Type","Fixture row",0,,0,1,,0,false,,,,,,,

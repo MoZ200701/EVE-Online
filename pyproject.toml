@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "evemarket"
+version = "0.1.0"
+description = "Local EVE Online market trading helper."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "httpx",
+    "pydantic",
+    "pydantic-settings",
+    "polars",
+    "duckdb",
+    "typer",
+    "apscheduler",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "ruff",
+    "mypy",
+]
+
+[project.scripts]
+evemarket = "evemarket.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+

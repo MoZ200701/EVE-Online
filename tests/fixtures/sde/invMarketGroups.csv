@@ -1,0 +1,3 @@
+"marketGroupID","parentGroupID","marketGroupName","description","iconID","hasTypes"
+1857,,"Minerals","Mineral market group",,true
+2,1857,"Advanced Materials","Fixture child group",,false
