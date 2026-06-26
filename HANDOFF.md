@@ -39,7 +39,7 @@ Key IDs: The Forge `10000002` (Jita; start here only). Jita IV-4 station `600037
 - Python 3.11+ (stdlib `tomllib`).
 - HTTP: `httpx` (async, HTTP/2, concurrent pagination).
 - Storage two-tier: **DuckDB** single file (reference + history + prices + derived + bookkeeping) + **Parquet** raw order snapshots partitioned `region=<id>/date=<YYYY-MM-DD>/<ts>.parquet`, read in place by DuckDB.
-- `polars` (dataframes), `pydantic` (validation), `typer` (CLI), `APScheduler` (scheduling).
+- `polars` (dataframes), `pydantic` (validation), `typer` (CLI), `APScheduler` (scheduling), `pytz` (DuckDB TIMESTAMPTZ↔Python; approved M3-FIX2).
 - **Generic seam:** every trade = `ProfitOpportunity` with pluggable `Acquisition` (now `MarketBuy`; future `Manufacture`) + `Disposal`. Industry slots in here without rewrite.
 - **ESI client is load-bearing:** caching (ETag/Expires + `If-None-Match`), error-budget backoff, pagination, gzip, retry-on-5xx, User-Agent with contact from config.
 
@@ -68,30 +68,26 @@ tests/
 
 Definition of done is per-step in each task prompt.
 
-## 6. Current Task (Codex) — M3-FIX: UTC timestamp storage + tz round-trip test
+## 6. Current Task (Codex) — M3-FIX2: declare pytz dep (TIMESTAMPTZ read path)
 
-M3 code DONE but REDO-lite. Bug: `ingest_runs` timestamps stored in LOCAL time, not UTC. Cause: tz-aware datetime → DuckDB `TIMESTAMP` (naive) localizes wall-clock + strips tz. Reproduced: insert `03:45:03+00:00` → stored `11:45:03` (machine UTC+8). Visible in M3 §8 log itself: printed `esi_expires 03:45:03+00:00` vs DB row `11:45:03`. Breaks: `snapshot_ts` in DB ≠ UTC ts in parquet partition path (`20260626T034446Z`); non-reproducible cross-machine. Tests missed it — DuckDB asserts read back source/region/pages/count/status/path/error but never the ts cols.
+M3-FIX schema correct (4 `TIMESTAMPTZ` cols + `SET TimeZone='UTC'`), committed `c1dacf8`, tree clean. BUT M3-FIX verification was INVALID: §8 logged `13 passed` only because you manually `pip install pytz` (you noted it, never declared it). Clean-env reproduce (planner ran): `python -m pytest -q` → `1 failed, 12 passed, 1 skipped`; `InvalidInputException: Required module 'pytz' failed to import` / `ModuleNotFoundError: No module named 'pytz'` at the TIMESTAMPTZ `fetchone()` (test L143). DuckDB needs pytz to convert TIMESTAMPTZ→Python tz-aware datetime on READ. Writes fine (failed-row test inserts tz-aware + passes); only Python reads of tz cols break. Latent: M4/M5/quality/analytics all read `ingest_runs` → all crash without pytz on a fresh install.
 
-Fix EXACTLY this. No new scope (no M4/M5/analytics).
+Planner sign-off: **pytz approved as runtime dep** (DuckDB's required companion for tz types; §4 deps updated). Fix EXACTLY this — nothing else.
 
-1. `store/schema.py` — change ALL four ts cols in `ingest_runs` from `TIMESTAMP` → `TIMESTAMPTZ`: `snapshot_ts`, `started_at`, `finished_at`, `esi_expires`. Keeps UTC explicit on round-trip. `data/market.duckdb` is gitignored throwaway — delete it so `CREATE TABLE IF NOT EXISTS` rebuilds with new types; no migration.
+1. `pyproject.toml` — add `pytz` to runtime `dependencies` (NOT dev-only; production reads tz cols). Reinstall `pip install -e ".[dev]"`.
+2. NO code/schema/test changes. `store/schema.py` + the read-back test are already correct — do NOT touch them.
 
-2. `tests/test_ingest_orders.py` — extend success test: add DuckDB read-back asserting `snapshot_ts` == injected `snapshot_ts` (UTC, tz-aware) and `esi_expires` == page-1 `Expires` (UTC, tz-aware). Must FAIL before fix (proves bug), PASS after. Keep existing parquet assertions. Also assert `started_at`/`finished_at` come back tz-aware UTC.
+**Constraints** — only `pyproject.toml` changes (+ lockfile if any); `data/`,`*.duckdb`,parquet stay untracked; don't change §4 beyond the already-approved pytz line. Blocked → STOP, write §9.
 
-3. Minor (esi_expires null-on-missing) — spec: `esi_expires` nullable from page-1 `Expires`. Currently `client._parse_expires` falls back to `now()` when header absent → records capture-time not NULL. ESI always sends `Expires` so harmless, but tighten if cheap: in `ingest/orders.py` record `esi_expires=None` when page-1 had no `Expires` header rather than relying on client fallback. If client API makes this awkward, LEAVE + note in §8 — low priority, do NOT expand scope to refactor the client.
-
-**Deferred — NOT this task (do not touch):**
-- Config/SkillConfig `BaseSettings` → `BaseModel` (§9 carry; env vars silently override TOML). Future standalone task.
-
-**Constraints** — no new deps; `data/`,`*.duckdb`,parquet stay untracked (gate on `git status --short`); don't change §4. Blocked → STOP, write §9.
-
-**Verification (paste into §8, terse per §2):**
-- `python -m pytest -q` pass, network-free; new ts read-back asserts present.
+**Verification (paste §8, terse per §2):**
+- Prove pytz is DECLARED, not just locally present: `pip uninstall -y pytz` → `pip install -e ".[dev]"` → `python -c "import pytz; print(pytz.__version__)"` succeeds (pulled via your declared dep). If uninstall/reinstall awkward, at minimum paste the `pyproject.toml` diff + `pip show pytz`.
+- `python -m pytest -q` → all pass with NO manual pytz install; network-free.
 - `python -m ruff check .` clean.
-- One live `ingest-orders` Forge run; paste `SELECT snapshot_ts, esi_expires FROM ingest_runs ORDER BY started_at DESC LIMIT 1` — must show UTC matching partition-path ts (no +8 skew).
-- Pre-commit `git status --short`: no `data/`/`*.duckdb`/parquet staged. Commit `fix: store ingest_runs timestamps as UTC TIMESTAMPTZ (M3)`; `git push origin main` (no force). Include `HANDOFF.md`.
+- Pre-commit `git status --short`: only `pyproject.toml` (+ `HANDOFF.md`); no `data/`/`*.duckdb`/parquet. Commit `fix: declare pytz dependency for TIMESTAMPTZ reads (M3)`; `git push origin main` (no force).
 
-When done: append §8 entry (terse) and STOP. M4 (history + everef backfill) next.
+**Deferred — NOT this task:** Config `BaseSettings`→`BaseModel` (§9).
+
+When done: append §8 entry (terse) and STOP. M4 (history + everef backfill) next — held until suite green in clean env.
 
 ## 7. Planner/Debugger Notes (Claude)
 
@@ -104,6 +100,7 @@ When done: append §8 entry (terse) and STOP. M4 (history + everef backfill) nex
 - **M2-COMMIT DONE.** Verified via git: `git log` = `6da016f` on top of `04d9c6a`; `git show HEAD:config.toml` UA = `Discord m0obot`; `git grep mzhou07011` (tracked) empty; no `data/`/`*.duckdb`/`sde_cache` tracked. Clean. (`HANDOFF.md` dirty = the compaction + this entry — folds into the M3 commit.)
 - **M3 drafted** (§6): order-book snapshot → Parquet (partitioned `region=/date=/<ts>.parquet`) + `ingest_runs` bookkeeping in new `market.duckdb`; fills stubs `ingest/orders.py`,`store/schema.py`,`store/writers.py` + CLI `ingest-orders` + offline tests; one polite live Forge run. Review focus on return: exact partition path/ts format, explicit polars schema (no inference), `issued` UTC parse, failed-run row on error, cheap sample-only `MarketOrder` validation (not all rows), and `data/` stays untracked.
 - **M3 REVIEW: REDO-lite.** Read all M3 code; `13 passed,1 skipped`; ruff clean. Code strong — explicit polars schema, partition path/ts format, `issued` UTC parse, success/fail split, sample-only `MarketOrder` validation, `data/` untracked: all correct. 1 REAL bug: `ingest_runs` ts cols stored LOCAL not UTC (tz-aware datetime → DuckDB naive `TIMESTAMP` localizes wall-clock + strips tz). Reproduced `03:45:03+00:00`→`11:45:03` (UTC+8); visible in M3 §8 log (printed esi_expires `03:45:03+00:00` vs DB row `11:45:03`). Breaks DB `snapshot_ts` ↔ parquet partition-ts tie + cross-machine reproducibility. Tests missed: DuckDB asserts skip both ts cols (parquet asserts OK b/c polars preserves tz). Fix → M3-FIX (§6): TIMESTAMPTZ + ts read-back test. Minors folded into §6: esi_expires falls back to `now()` on missing Expires header (spec=nullable, low-pri); Config still `BaseSettings` (deferred §9). M0–M2 stay DONE.
+- **M3-FIX REVIEW: REDO (hidden dep).** Schema fix correct (4 `TIMESTAMPTZ`, `SET TimeZone='UTC'`), committed `c1dacf8`, tree clean, read-back test good. But Codex verification INVALID: `13 passed` only b/c manual `pip install pytz` (noted §8, never declared in `pyproject.toml`). Planner clean-env `python -m pytest -q` → `1 failed, 12 passed, 1 skipped`: `InvalidInputException: Required module 'pytz' failed to import` at TIMESTAMPTZ `fetchone()` (L143). DuckDB needs pytz to read tz cols → Python; writes OK (failed-row insert passes). Latent crash for M4/M5/quality/analytics (all read `ingest_runs`) on fresh install. Fix → M3-FIX2 (§6): declare pytz dep (planner sign-off; §4 deps line updated). Process note for Codex: "no new deps" means STOP+flag in §9 if you need one — never silently `pip install` to make tests pass. M4 held until suite green in clean env. M0–M2 stay DONE.
 
 ## 8. Execution Log (Codex)
 
@@ -127,6 +124,8 @@ Changed: `store/schema.py`, `store/writers.py`, `ingest/orders.py`, `cli.py`, `t
 
 ### M3-FIX — UTC ingest_run timestamps — 2026-06-26 — COMPLETE
 Changed: `store/schema.py`, `tests/test_ingest_orders.py`, `HANDOFF.md`. `ingest_runs` ts cols `TIMESTAMPTZ`; `ensure_market_db` sets DuckDB `TimeZone='UTC'`; success test reads DB with UTC session and asserts `snapshot_ts`, `esi_expires`, `started_at`, `finished_at` tz-aware UTC. Deleted throwaway `data/market.duckdb` before live rebuild. Offline: bare `python` absent; installed `.[dev]` into bundled Python; installed `pytz` for DuckDB `TIMESTAMPTZ` Python fetch; first pytest blocked by AppData temp permission, reran workspace temp. `...\python.exe -m pytest -q -p no:cacheprovider --basetemp .pytest-tmp` -> `13 passed, 1 skipped in 1.49s`; `...\python.exe -m ruff check .` -> `All checks passed!`. Live: `...\Scripts\evemarket.exe ingest-orders` -> region `10000002`, status `success`, run_id `ac42358f-0534-4ce3-8739-d1d1d509d5bd`, pages `424`, order_count `423548`, snapshot `data\snapshots\orders\region=10000002\date=2026-06-26\20260626T040005Z.parquet`, esi_expires `2026-06-26 04:05:03+00:00`. UTC query (`SET TimeZone='UTC'; SELECT snapshot_ts, esi_expires FROM ingest_runs ORDER BY started_at DESC LIMIT 1`) -> `[(datetime.datetime(2026, 6, 26, 4, 0, 5, 697187, tzinfo=<UTC>), datetime.datetime(2026, 6, 26, 4, 5, 3, tzinfo=<UTC>))]`; matches partition path `20260626T040005Z`, no +8 skew. `DESCRIBE ingest_runs` confirms four `TIMESTAMP WITH TIME ZONE` cols. Pre-commit `git status --short`: only `HANDOFF.md`, `src/evemarket/store/schema.py`, `tests/test_ingest_orders.py`; `git check-ignore` confirmed `data/market.duckdb` + live parquet ignored. Deviation: missing-`Expires` NULL tweak left untouched; client API always returns fallback `expires`, avoiding refactor per low-pri note. Questions: none.
+### M3-FIX2 — declare pytz dependency — 2026-06-26 — COMPLETE
+Changed: `pyproject.toml`, `HANDOFF.md`. Added runtime `pytz` dependency for DuckDB `TIMESTAMPTZ` read conversion; no code/schema/test changes. Verification: `...\python.exe -m pip uninstall -y pytz` -> uninstalled `pytz 2026.2`; `...\python.exe -m pip install -e ".[dev]"` -> `Collecting pytz (from evemarket==0.1.0)`, `Successfully installed evemarket-0.1.0 pytz-2026.2`; `...\python.exe -c "import pytz; print(pytz.__version__)"` -> `2026.2`. Offline: `...\python.exe -m pytest -q -p no:cacheprovider --basetemp .pytest-tmp` -> `13 passed, 1 skipped in 1.34s`; `...\python.exe -m ruff check .` -> `All checks passed!`. Pre-commit `git status --short`: only `HANDOFF.md`, `pyproject.toml`; no `data/`/`*.duckdb`/parquet staged. Deviations: used bundled Python absolute path because bare `python` unavailable; pytest used workspace basetemp due AppData temp permission issue. Questions: none.
 Template: `### M<n> — <title> — <date> — COMPLETE/BLOCKED` then: Files | Commands+result | Verification | Deviations | Questions.
 
 ## 9. Open Questions / Blockers
