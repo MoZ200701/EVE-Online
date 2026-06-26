@@ -316,7 +316,7 @@ Pre-commit `git status --short`: `AGENTS.md`, `HANDOFF.md`, `src/evemarket/cli.p
 Deviations: used bundled Python absolute path; `git status` warned user global ignore inaccessible (`C:\Users\M0obo/.config/git/ignore` permission denied); no behavior impact. Questions: none.
 
 ### M5c - data-quality checks + quality-check CLI - 2026-06-26 - COMPLETE
-Files: `src/evemarket/store/quality.py`, `src/evemarket/cli.py`, `tests/test_quality.py`, `HANDOFF.md`. Commit: pending until commit creation.
+Files: `src/evemarket/store/quality.py`, `src/evemarket/cli.py`, `tests/test_quality.py`, `HANDOFF.md`. Commit: `7eb3760`.
 Implemented `QualityCheck`; `run_quality_checks` with ordered checks `stale_prices`, `stale_history`, `price_anomalies`, `history_anomalies`, `failed_runs`; UTC `_ensure_utc`; read-only SELECT checks; CLI `quality-check --max-price-age-hours/--max-history-age-days`, prints `[STATUS]`, exits 1 on fail.
 Offline: bare `python -m pytest -q` failed (`python` not on PATH). Bundled Python: `...\python.exe -m pytest -q -p no:cacheprovider --basetemp .pytest-tmp` -> `36 passed, 1 skipped in 3.21s`. `...\python.exe -m ruff check .` -> `All checks passed!`.
 Live read-only: `...\Scripts\evemarket.exe quality-check` -> `[OK] stale_prices: latest=2026-06-26T08:17:44.117069+00:00 age=0.5h`; `[OK] stale_history: latest=2026-06-24 age=2d`; `[OK] price_anomalies: negative=0 null_adjusted=0 (latest snapshot)`; `[OK] history_anomalies: 0 invalid rows`; `[OK] failed_runs: no failed runs`; `EXIT_CODE=0`.
