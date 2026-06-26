@@ -33,3 +33,11 @@ class MarketHistoryDay(BaseModel):
     lowest: float
     order_count: int
     volume: int
+
+
+class MarketPrice(BaseModel):
+    """One global market price row from ESI."""
+
+    type_id: int
+    adjusted_price: float | None = None
+    average_price: float | None = None

@@ -8,6 +8,7 @@ import duckdb
 
 INGEST_RUNS_TABLE = "ingest_runs"
 MARKET_HISTORY_TABLE = "market_history"
+MARKET_PRICES_TABLE = "market_prices"
 
 
 def ensure_market_db(path: str | Path) -> duckdb.DuckDBPyConnection:
@@ -47,6 +48,17 @@ def ensure_market_db(path: str | Path) -> duckdb.DuckDBPyConnection:
             order_count BIGINT,
             volume BIGINT,
             PRIMARY KEY (region_id, type_id, date)
+        )
+        """
+    )
+    connection.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {MARKET_PRICES_TABLE} (
+            type_id BIGINT,
+            adjusted_price DOUBLE,
+            average_price DOUBLE,
+            snapshot_ts TIMESTAMPTZ,
+            PRIMARY KEY (type_id, snapshot_ts)
         )
         """
     )

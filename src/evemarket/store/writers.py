@@ -38,6 +38,13 @@ HISTORY_SCHEMA = {
     "type_id": pl.Int64,
 }
 
+PRICE_SCHEMA = {
+    "type_id": pl.Int64,
+    "adjusted_price": pl.Float64,
+    "average_price": pl.Float64,
+    "snapshot_ts": pl.Datetime(time_zone="UTC"),
+}
+
 
 def write_orders_snapshot(
     orders: list[dict],
@@ -99,6 +106,71 @@ def write_history_bulk(conn: duckdb.DuckDBPyConnection, rows: list[dict]) -> int
         return 0
     frame = pl.DataFrame(rows, schema=HISTORY_SCHEMA, strict=True)
     return _upsert_history_frame(conn, frame)
+
+
+def write_prices(
+    conn: duckdb.DuckDBPyConnection,
+    prices: list[dict],
+    snapshot_ts: datetime,
+) -> int:
+    """Upsert one global ESI market-prices snapshot."""
+
+    if not prices:
+        return 0
+
+    snapshot_ts = _ensure_utc(snapshot_ts)
+    rows = [
+        {
+            "type_id": price["type_id"],
+            "adjusted_price": price.get("adjusted_price"),
+            "average_price": price.get("average_price"),
+            "snapshot_ts": snapshot_ts,
+        }
+        for price in prices
+    ]
+    frame = pl.DataFrame(rows, schema=PRICE_SCHEMA, strict=True)
+    conn.execute(
+        """
+        CREATE TEMP TABLE price_rows (
+            type_id BIGINT,
+            adjusted_price DOUBLE,
+            average_price DOUBLE,
+            snapshot_ts TIMESTAMPTZ
+        )
+        """
+    )
+    try:
+        conn.executemany(
+            """
+            INSERT INTO price_rows (
+                type_id, adjusted_price, average_price, snapshot_ts
+            )
+            VALUES (?, ?, ?, ?)
+            """,
+            frame.select(
+                [
+                    "type_id",
+                    "adjusted_price",
+                    "average_price",
+                    "snapshot_ts",
+                ]
+            ).rows(),
+        )
+        conn.execute(
+            """
+            INSERT INTO market_prices (
+                type_id, adjusted_price, average_price, snapshot_ts
+            )
+            SELECT type_id, adjusted_price, average_price, snapshot_ts
+            FROM price_rows
+            ON CONFLICT (type_id, snapshot_ts) DO UPDATE SET
+                adjusted_price = EXCLUDED.adjusted_price,
+                average_price = EXCLUDED.average_price
+            """
+        )
+    finally:
+        conn.execute("DROP TABLE IF EXISTS price_rows")
+    return frame.height
 
 
 def _upsert_history_frame(conn: duckdb.DuckDBPyConnection, frame: pl.DataFrame) -> int:

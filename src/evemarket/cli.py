@@ -14,6 +14,7 @@ from evemarket.esi.models import MarketOrder
 from evemarket.ingest.backfill import backfill_history_everef
 from evemarket.ingest.history import ingest_history
 from evemarket.ingest.orders import ingest_orders
+from evemarket.ingest.prices import ingest_prices
 from evemarket.sde.load import connect, download_sde, load_sde, table_counts
 
 app = typer.Typer(help="EVE Market Tool.")
@@ -278,3 +279,29 @@ def _parse_backfill_dates(start: str | None, end: str | None) -> tuple[date, dat
         raise typer.BadParameter("--start and --end must be provided together.")
 
     return date.fromisoformat(start), date.fromisoformat(end)
+
+
+@app.command("ingest-prices")
+def ingest_prices_command(
+    config: Path = typer.Option(
+        Path("config.toml"),
+        "--config",
+        "-c",
+        help="Path to a TOML configuration file.",
+    ),
+) -> None:
+    """Fetch and store global ESI market prices."""
+
+    loaded_config = load_config(config)
+    result = asyncio.run(_run_ingest_prices(loaded_config))
+
+    typer.echo(f"Status: {result.status}")
+    typer.echo(f"Run ID: {result.run_id}")
+    typer.echo(f"Price count: {result.price_count}")
+    typer.echo(f"ESI expires: {result.esi_expires}")
+    typer.echo(f"Snapshot ts: {result.snapshot_ts}")
+
+
+async def _run_ingest_prices(config):
+    async with ESIClient(config=config) as client:
+        return await ingest_prices(client, config)
