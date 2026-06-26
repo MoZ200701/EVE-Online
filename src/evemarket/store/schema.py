@@ -7,6 +7,7 @@ from pathlib import Path
 import duckdb
 
 INGEST_RUNS_TABLE = "ingest_runs"
+MARKET_HISTORY_TABLE = "market_history"
 
 
 def ensure_market_db(path: str | Path) -> duckdb.DuckDBPyConnection:
@@ -31,6 +32,21 @@ def ensure_market_db(path: str | Path) -> duckdb.DuckDBPyConnection:
             esi_expires TIMESTAMPTZ,
             snapshot_path TEXT,
             error TEXT
+        )
+        """
+    )
+    connection.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {MARKET_HISTORY_TABLE} (
+            region_id BIGINT,
+            type_id BIGINT,
+            date DATE,
+            average DOUBLE,
+            highest DOUBLE,
+            lowest DOUBLE,
+            order_count BIGINT,
+            volume BIGINT,
+            PRIMARY KEY (region_id, type_id, date)
         )
         """
     )

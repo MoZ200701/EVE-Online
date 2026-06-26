@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +25,17 @@ ORDER_SCHEMA = {
     "issued": pl.Datetime(time_zone="UTC"),
     "region_id": pl.Int64,
     "snapshot_ts": pl.Datetime(time_zone="UTC"),
+}
+
+HISTORY_SCHEMA = {
+    "date": pl.Date,
+    "average": pl.Float64,
+    "highest": pl.Float64,
+    "lowest": pl.Float64,
+    "order_count": pl.Int64,
+    "volume": pl.Int64,
+    "region_id": pl.Int64,
+    "type_id": pl.Int64,
 }
 
 
@@ -58,6 +69,80 @@ def write_orders_snapshot(
     snapshot_path = snapshot_dir / f"{snapshot_ts.strftime('%Y%m%dT%H%M%SZ')}.parquet"
     frame.write_parquet(snapshot_path, compression="zstd")
     return snapshot_path, frame.height
+
+
+def write_history(
+    conn: duckdb.DuckDBPyConnection,
+    region_id: int,
+    type_id: int,
+    days: list[dict],
+) -> int:
+    """Upsert daily market history rows for one region/type pair."""
+
+    rows = [
+        {
+            **day,
+            "date": _parse_esi_date(day["date"]),
+            "region_id": region_id,
+            "type_id": type_id,
+        }
+        for day in days
+    ]
+    frame = pl.DataFrame(rows, schema=HISTORY_SCHEMA, strict=True)
+    conn.execute(
+        """
+        CREATE TEMP TABLE history_rows (
+            date DATE,
+            average DOUBLE,
+            highest DOUBLE,
+            lowest DOUBLE,
+            order_count BIGINT,
+            volume BIGINT,
+            region_id BIGINT,
+            type_id BIGINT
+        )
+        """
+    )
+    try:
+        conn.executemany(
+            """
+            INSERT INTO history_rows (
+                date, average, highest, lowest, order_count, volume, region_id, type_id
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            frame.select(
+                [
+                    "date",
+                    "average",
+                    "highest",
+                    "lowest",
+                    "order_count",
+                    "volume",
+                    "region_id",
+                    "type_id",
+                ]
+            ).rows(),
+        )
+        conn.execute(
+            """
+            INSERT INTO market_history (
+                region_id, type_id, date, average, highest, lowest, order_count, volume
+            )
+            SELECT
+                region_id, type_id, date, average, highest, lowest, order_count, volume
+            FROM history_rows
+            ON CONFLICT (region_id, type_id, date) DO UPDATE SET
+                average = EXCLUDED.average,
+                highest = EXCLUDED.highest,
+                lowest = EXCLUDED.lowest,
+                order_count = EXCLUDED.order_count,
+                volume = EXCLUDED.volume
+            """
+        )
+    finally:
+        conn.execute("DROP TABLE IF EXISTS history_rows")
+    return frame.height
 
 
 def record_ingest_run(
@@ -95,6 +180,12 @@ def _parse_esi_datetime(value: str | datetime) -> datetime:
     if isinstance(value, datetime):
         return _ensure_utc(value)
     return _ensure_utc(datetime.fromisoformat(value.replace("Z", "+00:00")))
+
+
+def _parse_esi_date(value: str | date) -> date:
+    if isinstance(value, date):
+        return value
+    return date.fromisoformat(value)
 
 
 def _ensure_utc(value: datetime) -> datetime:

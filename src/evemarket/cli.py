@@ -10,6 +10,7 @@ import typer
 from evemarket.config import load_config
 from evemarket.esi.client import ESIClient
 from evemarket.esi.models import MarketOrder
+from evemarket.ingest.history import ingest_history
 from evemarket.ingest.orders import ingest_orders
 from evemarket.sde.load import connect, download_sde, load_sde, table_counts
 
@@ -176,3 +177,45 @@ def ingest_orders_command(
 async def _run_ingest_orders(config, region: int):
     async with ESIClient(config=config) as client:
         return await ingest_orders(client, config, region)
+
+
+@app.command("ingest-history")
+def ingest_history_command(
+    config: Path = typer.Option(
+        Path("config.toml"),
+        "--config",
+        "-c",
+        help="Path to a TOML configuration file.",
+    ),
+    region: int | None = typer.Option(
+        None,
+        "--region",
+        help="EVE region ID. Defaults to the first configured tracked region.",
+    ),
+    type_ids: list[int] | None = typer.Option(
+        None,
+        "--type",
+        help="EVE type ID to fetch. Repeat for multiple types.",
+    ),
+) -> None:
+    """Fetch and store ESI daily market history."""
+
+    loaded_config = load_config(config)
+    selected_region = region or loaded_config.tracked_regions[0]
+    selected_type_ids = type_ids or [34]
+    result = asyncio.run(
+        _run_ingest_history(loaded_config, selected_region, selected_type_ids)
+    )
+
+    typer.echo(f"Region: {result.region_id}")
+    typer.echo(f"Status: {result.status}")
+    typer.echo(f"Run ID: {result.run_id}")
+    typer.echo(f"Types fetched: {result.types_fetched}")
+    typer.echo(f"Type IDs: {result.type_ids}")
+    typer.echo(f"Day count: {result.day_count}")
+    typer.echo(f"ESI expires: {result.esi_expires}")
+
+
+async def _run_ingest_history(config, region: int, type_ids: list[int]):
+    async with ESIClient(config=config) as client:
+        return await ingest_history(client, config, region, type_ids)

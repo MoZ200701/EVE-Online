@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 
 from pydantic import BaseModel
 
@@ -22,3 +22,14 @@ class MarketOrder(BaseModel):
     range: str
     duration: int
     issued: datetime
+
+
+class MarketHistoryDay(BaseModel):
+    """One daily market-history row from ESI."""
+
+    date: date
+    average: float
+    highest: float
+    lowest: float
+    order_count: int
+    volume: int
