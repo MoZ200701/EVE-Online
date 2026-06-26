@@ -1,4 +1,103 @@
-"""Storage writer stub."""
+"""Writers for market ingestion artifacts."""
 
-# TODO: M3
+from __future__ import annotations
 
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+import duckdb
+import polars as pl
+
+
+ORDER_SCHEMA = {
+    "order_id": pl.Int64,
+    "type_id": pl.Int64,
+    "is_buy_order": pl.Boolean,
+    "price": pl.Float64,
+    "volume_remain": pl.Int64,
+    "volume_total": pl.Int64,
+    "min_volume": pl.Int64,
+    "location_id": pl.Int64,
+    "system_id": pl.Int64,
+    "range": pl.Utf8,
+    "duration": pl.Int64,
+    "issued": pl.Datetime(time_zone="UTC"),
+    "region_id": pl.Int64,
+    "snapshot_ts": pl.Datetime(time_zone="UTC"),
+}
+
+
+def write_orders_snapshot(
+    orders: list[dict],
+    region_id: int,
+    snapshot_ts: datetime,
+    snapshots_root: Path,
+) -> tuple[Path, int]:
+    """Write a partitioned Parquet order-book snapshot."""
+
+    snapshot_ts = _ensure_utc(snapshot_ts)
+    rows = [
+        {
+            **order,
+            "issued": _parse_esi_datetime(order["issued"]),
+            "region_id": region_id,
+            "snapshot_ts": snapshot_ts,
+        }
+        for order in orders
+    ]
+    frame = pl.DataFrame(rows, schema=ORDER_SCHEMA, strict=True)
+
+    snapshot_dir = (
+        snapshots_root
+        / "orders"
+        / f"region={region_id}"
+        / f"date={snapshot_ts.strftime('%Y-%m-%d')}"
+    )
+    snapshot_dir.mkdir(parents=True, exist_ok=True)
+    snapshot_path = snapshot_dir / f"{snapshot_ts.strftime('%Y%m%dT%H%M%SZ')}.parquet"
+    frame.write_parquet(snapshot_path, compression="zstd")
+    return snapshot_path, frame.height
+
+
+def record_ingest_run(
+    conn: duckdb.DuckDBPyConnection,
+    **fields: Any,
+) -> None:
+    """Insert one row into ingest_runs."""
+
+    conn.execute(
+        """
+        INSERT INTO ingest_runs (
+            run_id, source, region_id, snapshot_ts, started_at, finished_at,
+            status, order_count, pages, esi_expires, snapshot_path, error
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            fields["run_id"],
+            fields["source"],
+            fields["region_id"],
+            fields["snapshot_ts"],
+            fields["started_at"],
+            fields["finished_at"],
+            fields["status"],
+            fields["order_count"],
+            fields["pages"],
+            fields.get("esi_expires"),
+            fields.get("snapshot_path"),
+            fields.get("error"),
+        ],
+    )
+
+
+def _parse_esi_datetime(value: str | datetime) -> datetime:
+    if isinstance(value, datetime):
+        return _ensure_utc(value)
+    return _ensure_utc(datetime.fromisoformat(value.replace("Z", "+00:00")))
+
+
+def _ensure_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)

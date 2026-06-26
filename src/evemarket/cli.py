@@ -10,6 +10,7 @@ import typer
 from evemarket.config import load_config
 from evemarket.esi.client import ESIClient
 from evemarket.esi.models import MarketOrder
+from evemarket.ingest.orders import ingest_orders
 from evemarket.sde.load import connect, download_sde, load_sde, table_counts
 
 app = typer.Typer(help="EVE Market Tool.")
@@ -141,3 +142,37 @@ async def _run_esi_check(config, region: int, limit: int) -> None:
             f"{order.order_id}: type={order.type_id} side={side} "
             f"price={order.price} remain={order.volume_remain}/{order.volume_total}"
         )
+
+
+@app.command("ingest-orders")
+def ingest_orders_command(
+    config: Path = typer.Option(
+        Path("config.toml"),
+        "--config",
+        "-c",
+        help="Path to a TOML configuration file.",
+    ),
+    region: int | None = typer.Option(
+        None,
+        "--region",
+        help="EVE region ID. Defaults to the first configured tracked region.",
+    ),
+) -> None:
+    """Fetch and store one full regional market order snapshot."""
+
+    loaded_config = load_config(config)
+    selected_region = region or loaded_config.tracked_regions[0]
+    result = asyncio.run(_run_ingest_orders(loaded_config, selected_region))
+
+    typer.echo(f"Region: {result.region_id}")
+    typer.echo(f"Status: {result.status}")
+    typer.echo(f"Run ID: {result.run_id}")
+    typer.echo(f"Pages: {result.pages}")
+    typer.echo(f"Order count: {result.order_count}")
+    typer.echo(f"Snapshot path: {result.snapshot_path}")
+    typer.echo(f"ESI expires: {result.esi_expires}")
+
+
+async def _run_ingest_orders(config, region: int):
+    async with ESIClient(config=config) as client:
+        return await ingest_orders(client, config, region)
