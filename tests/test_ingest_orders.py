@@ -79,12 +79,13 @@ def test_ingest_orders_writes_snapshot_and_success_run(tmp_path: Path) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         page = int(request.url.params.get("page", "1"))
         requested_pages.append(page)
+        headers = esi_headers(clock, pages=2)
         payload = (
             [order_payload(1)]
             if page == 1
             else [order_payload(2, system_id=None), order_payload(3)]
         )
-        return httpx.Response(200, headers=esi_headers(clock, pages=2), json=payload)
+        return httpx.Response(200, headers=headers, json=payload)
 
     async def scenario():
         async with make_client(handler, clock) as client:
@@ -106,6 +107,7 @@ def test_ingest_orders_writes_snapshot_and_success_run(tmp_path: Path) -> None:
     assert result.snapshot_path == expected_path
     assert expected_path.exists()
     assert sorted(requested_pages) == [1, 2]
+    expected_esi_expires = clock() + timedelta(minutes=5)
 
     frame = pl.read_parquet(expected_path)
     assert frame.columns == [
@@ -130,14 +132,30 @@ def test_ingest_orders_writes_snapshot_and_success_run(tmp_path: Path) -> None:
     assert frame["snapshot_ts"].to_list() == [snapshot_ts, snapshot_ts, snapshot_ts]
 
     with duckdb.connect(str(tmp_path / "market.duckdb")) as connection:
+        connection.execute("SET TimeZone='UTC'")
         row = connection.execute(
             """
-            SELECT source, region_id, pages, order_count, status, snapshot_path, error
+            SELECT
+                source, region_id, snapshot_ts, started_at, finished_at, pages,
+                order_count, status, esi_expires, snapshot_path, error
             FROM ingest_runs
             """
         ).fetchone()
 
-    assert row == (
+    (
+        source,
+        region_id,
+        stored_snapshot_ts,
+        started_at,
+        finished_at,
+        pages,
+        order_count,
+        status,
+        esi_expires,
+        snapshot_path,
+        error,
+    ) = row
+    assert (source, region_id, pages, order_count, status, snapshot_path, error) == (
         "esi_orders",
         10000002,
         2,
@@ -146,6 +164,12 @@ def test_ingest_orders_writes_snapshot_and_success_run(tmp_path: Path) -> None:
         str(expected_path),
         None,
     )
+    assert stored_snapshot_ts == snapshot_ts
+    assert esi_expires == expected_esi_expires
+    assert started_at.tzinfo is not None
+    assert finished_at.tzinfo is not None
+    assert started_at.utcoffset() == timedelta(0)
+    assert finished_at.utcoffset() == timedelta(0)
 
 
 def test_ingest_orders_records_failed_run_without_parquet(tmp_path: Path) -> None:

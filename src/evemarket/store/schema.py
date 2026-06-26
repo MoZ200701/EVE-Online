@@ -15,19 +15,20 @@ def ensure_market_db(path: str | Path) -> duckdb.DuckDBPyConnection:
     duckdb_path = Path(path)
     duckdb_path.parent.mkdir(parents=True, exist_ok=True)
     connection = duckdb.connect(str(duckdb_path))
+    connection.execute("SET TimeZone='UTC'")
     connection.execute(
         f"""
         CREATE TABLE IF NOT EXISTS {INGEST_RUNS_TABLE} (
             run_id TEXT,
             source TEXT,
             region_id BIGINT,
-            snapshot_ts TIMESTAMP,
-            started_at TIMESTAMP,
-            finished_at TIMESTAMP,
+            snapshot_ts TIMESTAMPTZ,
+            started_at TIMESTAMPTZ,
+            finished_at TIMESTAMPTZ,
             status TEXT,
             order_count BIGINT,
             pages INTEGER,
-            esi_expires TIMESTAMP,
+            esi_expires TIMESTAMPTZ,
             snapshot_path TEXT,
             error TEXT
         )

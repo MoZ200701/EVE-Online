@@ -68,49 +68,30 @@ tests/
 
 Definition of done is per-step in each task prompt.
 
-## 6. Current Task (Codex) — M3: order-book snapshot ingestion
+## 6. Current Task (Codex) — M3-FIX: UTC timestamp storage + tz round-trip test
 
-Goal: pull the full live order book for a region via the M2 `ESIClient`, write one Parquet snapshot to the partitioned tree, and record a bookkeeping row in `market.duckdb`. Fill the existing stubs (`ingest/orders.py`, `store/schema.py`, `store/writers.py`); add a CLI command + tests. Execute exactly this — no history (M4), no prices (M5), no scheduler, no analytics.
+M3 code DONE but REDO-lite. Bug: `ingest_runs` timestamps stored in LOCAL time, not UTC. Cause: tz-aware datetime → DuckDB `TIMESTAMP` (naive) localizes wall-clock + strips tz. Reproduced: insert `03:45:03+00:00` → stored `11:45:03` (machine UTC+8). Visible in M3 §8 log itself: printed `esi_expires 03:45:03+00:00` vs DB row `11:45:03`. Breaks: `snapshot_ts` in DB ≠ UTC ts in parquet partition path (`20260626T034446Z`); non-reproducible cross-machine. Tests missed it — DuckDB asserts read back source/region/pages/count/status/path/error but never the ts cols.
 
-**Paths (from `config.data_dir`, default `./data`):**
-- market DB: `<data_dir>/market.duckdb` (NEW; separate from `sde.duckdb`).
-- snapshot: `<data_dir>/snapshots/orders/region=<region_id>/date=<YYYY-MM-DD>/<TS>.parquet`, where `date` = `snapshot_ts.strftime("%Y-%m-%d")` and `<TS>` = `snapshot_ts.strftime("%Y%m%dT%H%M%SZ")`, both from the UTC capture time. Create dirs as needed.
+Fix EXACTLY this. No new scope (no M4/M5/analytics).
 
-**Deliverables**
+1. `store/schema.py` — change ALL four ts cols in `ingest_runs` from `TIMESTAMP` → `TIMESTAMPTZ`: `snapshot_ts`, `started_at`, `finished_at`, `esi_expires`. Keeps UTC explicit on round-trip. `data/market.duckdb` is gitignored throwaway — delete it so `CREATE TABLE IF NOT EXISTS` rebuilds with new types; no migration.
 
-1. `store/schema.py` — `ensure_market_db(path) -> duckdb connection` (or open+ensure helper). Idempotently `CREATE TABLE IF NOT EXISTS ingest_runs`:
-   - `run_id TEXT` (uuid4), `source TEXT` (`'esi_orders'`), `region_id BIGINT`,
-   - `snapshot_ts TIMESTAMP` (UTC capture time = partition ts), `started_at TIMESTAMP`, `finished_at TIMESTAMP`,
-   - `status TEXT` (`'success'`/`'failed'`), `order_count BIGINT`, `pages INTEGER`,
-   - `esi_expires TIMESTAMP` (nullable; from page-1 `Expires`), `snapshot_path TEXT` (nullable on failure), `error TEXT` (nullable).
-   Constants for table/column names if helpful. No ORM.
+2. `tests/test_ingest_orders.py` — extend success test: add DuckDB read-back asserting `snapshot_ts` == injected `snapshot_ts` (UTC, tz-aware) and `esi_expires` == page-1 `Expires` (UTC, tz-aware). Must FAIL before fix (proves bug), PASS after. Keep existing parquet assertions. Also assert `started_at`/`finished_at` come back tz-aware UTC.
 
-2. `store/writers.py`:
-   - `write_orders_snapshot(orders: list[dict], region_id: int, snapshot_ts: datetime, snapshots_root: Path) -> tuple[Path, int]` — build a polars DataFrame with an **explicit schema** (don't infer): `order_id Int64, type_id Int64, is_buy_order Boolean, price Float64, volume_remain Int64, volume_total Int64, min_volume Int64, location_id Int64, system_id Int64 (nullable), range Utf8, duration Int64, issued Datetime(tz=UTC)`, plus added columns `region_id Int64` and `snapshot_ts Datetime(tz=UTC)`. Parse `issued` (ISO8601 `...Z`) to UTC datetime. Write Parquet (zstd) to the partition path; return `(path, row_count)`.
-   - `record_ingest_run(conn, **fields) -> None` — insert one `ingest_runs` row (parameterized).
+3. Minor (esi_expires null-on-missing) — spec: `esi_expires` nullable from page-1 `Expires`. Currently `client._parse_expires` falls back to `now()` when header absent → records capture-time not NULL. ESI always sends `Expires` so harmless, but tighten if cheap: in `ingest/orders.py` record `esi_expires=None` when page-1 had no `Expires` header rather than relying on client fallback. If client API makes this awkward, LEAVE + note in §8 — low priority, do NOT expand scope to refactor the client.
 
-3. `ingest/orders.py` — `async def ingest_orders(client: ESIClient, config: Config, region_id: int, *, now: datetime | None = None) -> IngestResult` (small dataclass: `run_id, region_id, snapshot_ts, order_count, pages, snapshot_path, status, esi_expires`). Flow:
-   - `snapshot_ts = now or datetime.now(UTC)`; `started_at` recorded.
-   - page 1 via `client.get(f"/markets/{region_id}/orders/")` to capture `pages` (`X-Pages`) and `esi_expires`; then full set via `client.get_paginated(...)` (or fetch page 1 then 2..N — your call, but capture pages+expires).
-   - `write_orders_snapshot(...)` → parquet + count.
-   - open `market.duckdb` via `ensure_market_db`, `record_ingest_run(status='success', ...)`.
-   - **On `ESIError`/write failure:** record a `status='failed'` row with the `error` string and `snapshot_path=NULL` (no parquet), then re-raise. Keep `now`/`snapshot_ts` injectable for deterministic test paths.
-   - Validate schema cheaply: cast via the explicit polars schema; additionally validate the **first ≤50** rows through `MarketOrder` (M2 model) to catch ESI drift — do NOT push all ~400k rows through pydantic.
+**Deferred — NOT this task (do not touch):**
+- Config/SkillConfig `BaseSettings` → `BaseModel` (§9 carry; env vars silently override TOML). Future standalone task.
 
-4. CLI `evemarket ingest-orders` (`@app.command("ingest-orders")`, `--region` default = first tracked region, `--config` like other commands) — builds `ESIClient` from config, runs `ingest_orders` via `asyncio.run`, prints: region, pages, order_count, snapshot_path, `esi_expires`, and the `run_id`/status.
+**Constraints** — no new deps; `data/`,`*.duckdb`,parquet stay untracked (gate on `git status --short`); don't change §4. Blocked → STOP, write §9.
 
-**Constraints**
-- No new deps (`polars`, `duckdb`, `httpx`, `typer`, `pydantic` already in §4). If you think you need one, STOP and flag in §9.
-- `market.duckdb` and `snapshots/` live under gitignored `data/` — must NOT be committed. Gate the commit on `git status --short` (nothing under `data/`, no `*.duckdb`, no parquet).
-- Don't change §4 architecture. If blocked, STOP and write §9.
-
-**Verification (paste into §8, terse per §2 style rule)**
-- `python -m pytest -q` passes, **network-free** (live test, if any, gated behind `EVEMARKET_LIVE_TESTS=1`). Offline tests (httpx.MockTransport, tmp `data_dir`, injected `now`) must cover: 2-page mock → parquet written at the exact expected partition path; row_count == sum of pages; `ingest_runs` has 1 `success` row with matching `order_count`/`pages`/`snapshot_path`; re-read parquet shows correct columns/types with `region_id` + `snapshot_ts` populated; failure path records a `failed` row with `error` set and no parquet.
+**Verification (paste into §8, terse per §2):**
+- `python -m pytest -q` pass, network-free; new ts read-back asserts present.
 - `python -m ruff check .` clean.
-- **One live run** (good ESI citizen — one snapshot only): `evemarket ingest-orders` against The Forge; paste the printed summary and the resulting `ingest_runs` row (e.g. `duckdb` query `SELECT run_id, region_id, pages, order_count, status, esi_expires FROM ingest_runs ORDER BY started_at DESC LIMIT 1`). Confirm the parquet file exists at its partition path.
-- Pre-commit `git status --short` proving no `data/`/`*.duckdb`/parquet staged; commit `feat: order-book snapshot ingestion to Parquet + ingest_runs (M3)`; `git push origin main` (no force). Include the compacted `HANDOFF.md` in this commit.
+- One live `ingest-orders` Forge run; paste `SELECT snapshot_ts, esi_expires FROM ingest_runs ORDER BY started_at DESC LIMIT 1` — must show UTC matching partition-path ts (no +8 skew).
+- Pre-commit `git status --short`: no `data/`/`*.duckdb`/parquet staged. Commit `fix: store ingest_runs timestamps as UTC TIMESTAMPTZ (M3)`; `git push origin main` (no force). Include `HANDOFF.md`.
 
-When done: append a §8 entry (terse) and STOP. M4 (history + everef backfill) is next.
+When done: append §8 entry (terse) and STOP. M4 (history + everef backfill) next.
 
 ## 7. Planner/Debugger Notes (Claude)
 
@@ -122,6 +103,7 @@ When done: append a §8 entry (terse) and STOP. M4 (history + everef backfill) i
 - User chose Discord handle `m0obot` (safe, non-personal). Wrote M2-COMMIT (§6): swap contact, verify no email, commit+push.
 - **M2-COMMIT DONE.** Verified via git: `git log` = `6da016f` on top of `04d9c6a`; `git show HEAD:config.toml` UA = `Discord m0obot`; `git grep mzhou07011` (tracked) empty; no `data/`/`*.duckdb`/`sde_cache` tracked. Clean. (`HANDOFF.md` dirty = the compaction + this entry — folds into the M3 commit.)
 - **M3 drafted** (§6): order-book snapshot → Parquet (partitioned `region=/date=/<ts>.parquet`) + `ingest_runs` bookkeeping in new `market.duckdb`; fills stubs `ingest/orders.py`,`store/schema.py`,`store/writers.py` + CLI `ingest-orders` + offline tests; one polite live Forge run. Review focus on return: exact partition path/ts format, explicit polars schema (no inference), `issued` UTC parse, failed-run row on error, cheap sample-only `MarketOrder` validation (not all rows), and `data/` stays untracked.
+- **M3 REVIEW: REDO-lite.** Read all M3 code; `13 passed,1 skipped`; ruff clean. Code strong — explicit polars schema, partition path/ts format, `issued` UTC parse, success/fail split, sample-only `MarketOrder` validation, `data/` untracked: all correct. 1 REAL bug: `ingest_runs` ts cols stored LOCAL not UTC (tz-aware datetime → DuckDB naive `TIMESTAMP` localizes wall-clock + strips tz). Reproduced `03:45:03+00:00`→`11:45:03` (UTC+8); visible in M3 §8 log (printed esi_expires `03:45:03+00:00` vs DB row `11:45:03`). Breaks DB `snapshot_ts` ↔ parquet partition-ts tie + cross-machine reproducibility. Tests missed: DuckDB asserts skip both ts cols (parquet asserts OK b/c polars preserves tz). Fix → M3-FIX (§6): TIMESTAMPTZ + ts read-back test. Minors folded into §6: esi_expires falls back to `now()` on missing Expires header (spec=nullable, low-pri); Config still `BaseSettings` (deferred §9). M0–M2 stay DONE.
 
 ## 8. Execution Log (Codex)
 
@@ -143,6 +125,8 @@ Changed: `config.toml` (UA contact → `Discord m0obot`), `tests/test_esi_client
 ### M3 — Order snapshot ingestion — 2026-06-26 — COMPLETE
 Changed: `store/schema.py`, `store/writers.py`, `ingest/orders.py`, `cli.py`, `tests/test_ingest_orders.py`, `HANDOFF.md`. Implemented `ensure_market_db`, `write_orders_snapshot` (explicit Polars schema, UTC `issued`/`snapshot_ts`, zstd Parquet partition path), `record_ingest_run`, `ingest_orders`, CLI `ingest-orders`. Offline: `python -m pytest -q` → `13 passed, 1 skipped in 1.36s`; `python -m ruff check .` → `All checks passed!`. Live: `python -c "from evemarket.cli import app; app()" ingest-orders` → Region 10000002, status success, run_id `c1923923-78ec-4c1a-bbd8-2c14d2a83f76`, pages 424, order_count 423452, snapshot `data\snapshots\orders\region=10000002\date=2026-06-26\20260626T034446Z.parquet`, esi_expires `2026-06-26 03:45:03+00:00`. DuckDB row: `('c1923923-78ec-4c1a-bbd8-2c14d2a83f76', 10000002, 424, 423452, 'success', datetime.datetime(2026, 6, 26, 11, 45, 3))`. Parquet exists, size 7517102 bytes. Pre-commit `git status --short`: only source/tests/HANDOFF; no `data/`/`*.duckdb`/parquet staged. Deviations: `evemarket` script not on PATH; used Typer app via Python import. ESI path uses `/latest/markets/...` matching M2/live CLI. Questions: none.
 
+### M3-FIX — UTC ingest_run timestamps — 2026-06-26 — COMPLETE
+Changed: `store/schema.py`, `tests/test_ingest_orders.py`, `HANDOFF.md`. `ingest_runs` ts cols `TIMESTAMPTZ`; `ensure_market_db` sets DuckDB `TimeZone='UTC'`; success test reads DB with UTC session and asserts `snapshot_ts`, `esi_expires`, `started_at`, `finished_at` tz-aware UTC. Deleted throwaway `data/market.duckdb` before live rebuild. Offline: bare `python` absent; installed `.[dev]` into bundled Python; installed `pytz` for DuckDB `TIMESTAMPTZ` Python fetch; first pytest blocked by AppData temp permission, reran workspace temp. `...\python.exe -m pytest -q -p no:cacheprovider --basetemp .pytest-tmp` -> `13 passed, 1 skipped in 1.49s`; `...\python.exe -m ruff check .` -> `All checks passed!`. Live: `...\Scripts\evemarket.exe ingest-orders` -> region `10000002`, status `success`, run_id `ac42358f-0534-4ce3-8739-d1d1d509d5bd`, pages `424`, order_count `423548`, snapshot `data\snapshots\orders\region=10000002\date=2026-06-26\20260626T040005Z.parquet`, esi_expires `2026-06-26 04:05:03+00:00`. UTC query (`SET TimeZone='UTC'; SELECT snapshot_ts, esi_expires FROM ingest_runs ORDER BY started_at DESC LIMIT 1`) -> `[(datetime.datetime(2026, 6, 26, 4, 0, 5, 697187, tzinfo=<UTC>), datetime.datetime(2026, 6, 26, 4, 5, 3, tzinfo=<UTC>))]`; matches partition path `20260626T040005Z`, no +8 skew. `DESCRIBE ingest_runs` confirms four `TIMESTAMP WITH TIME ZONE` cols. Pre-commit `git status --short`: only `HANDOFF.md`, `src/evemarket/store/schema.py`, `tests/test_ingest_orders.py`; `git check-ignore` confirmed `data/market.duckdb` + live parquet ignored. Deviation: missing-`Expires` NULL tweak left untouched; client API always returns fallback `expires`, avoiding refactor per low-pri note. Questions: none.
 Template: `### M<n> — <title> — <date> — COMPLETE/BLOCKED` then: Files | Commands+result | Verification | Deviations | Questions.
 
 ## 9. Open Questions / Blockers
