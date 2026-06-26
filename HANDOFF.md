@@ -337,7 +337,7 @@ Pre-commit `git status --short`: `HANDOFF.md`, `src/evemarket/cli.py`, `src/evem
 Deviations: used bundled Python absolute path; `git status` warned user global ignore inaccessible (`C:\Users\M0obo/.config/git/ignore` permission denied); no behavior impact. Questions: none.
 
 ### M5-FIX - Phase-1 mypy cleanup - 2026-06-26 - COMPLETE
-Files: `pyproject.toml`, `src/evemarket/store/writers.py`, `src/evemarket/sde/load.py`, `HANDOFF.md`. Commit: pending until commit creation.
+Files: `pyproject.toml`, `src/evemarket/store/writers.py`, `src/evemarket/sde/load.py`, `HANDOFF.md`. Commit: `f654b2f`.
 Implemented schema constant annotations `dict[str, Any]`; `_scalar_count` None guard + `int(...)` cast for `table_counts`; `[tool.mypy]` override for `apscheduler.*`/`pytz`; no deps/no behavior changes.
 Offline: bare `python -m mypy src/`, `python -m pytest -q`, `python -m ruff check .` all failed (`python` not on PATH). Bundled Python: `...\python.exe -m mypy src/` -> `Success: no issues found in 23 source files`; `...\python.exe -m pytest -q -p no:cacheprovider --basetemp .pytest-tmp` -> `36 passed, 1 skipped in 2.87s`; `...\python.exe -m ruff check .` -> `All checks passed!`.
 Live: none (pure typing cleanup).
