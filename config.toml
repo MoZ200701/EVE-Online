@@ -1,6 +1,6 @@
 # EVE Market Tool configuration.
-# Replace the contact placeholder with an email, Discord handle, or other reachable contact.
-user_agent = "eve-market-tool/0.1 (contact: REPLACE_ME)"
+# Contact is sent to ESI in the User-Agent header.
+user_agent = "eve-market-tool/0.1 (contact: Discord m0obot)"
 
 # The Forge only for M0/M1 startup scope.
 tracked_regions = [10000002]

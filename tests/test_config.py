@@ -73,3 +73,11 @@ data_dir = "./data"
     assert "Tracked regions:" in result.stdout
     assert "User-Agent set: yes" in result.stdout
 
+
+def test_info_command_warns_on_placeholder_user_agent(tmp_path: Path) -> None:
+    runner = CliRunner()
+
+    result = runner.invoke(app, ["info", "--config", str(tmp_path / "missing.toml")])
+
+    assert result.exit_code == 0
+    assert "WARNING: User-Agent still contains REPLACE_ME" in result.stdout

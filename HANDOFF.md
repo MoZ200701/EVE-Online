@@ -108,8 +108,9 @@ eve-market-tool/
 **Phase 1 — data pipeline**
 - M0  Scaffold (repo, deps, config, CLI wiring)             ✅ DONE
 - M1  SDE loaded into `sde.duckdb` and queryable            ✅ DONE
-- REPO  git init + initial push to GitHub                   ← CURRENT (side-task)
-- M2  ESI client (caching, error-budget, pagination) + live tests
+- REPO  git init + initial push to GitHub                   ✅ DONE
+- M2  ESI client (caching, error-budget, pagination) + live tests   ✅ DONE
+- M2-COMMIT  fix ESI contact (Discord) + commit/push M2              ← CURRENT
 - M3  Order-book snapshot ingestion (The Forge → Parquet) + `ingest_runs` log
 - M4  History ingestion + everef.net backfill
 - M5  Prices ingestion + scheduler + data-quality checks
@@ -124,50 +125,139 @@ Definition of done is per-step and lives in each task prompt.
 
 ## 6. Current Task (for GPT‑5.5)
 
-> **STEP REPO — Initialize git and make the initial push to GitHub.** A one-off
-> infra side-task between M1 and M2. Execute exactly this; stop and report when
-> done. (M0 and M1 are DONE — see §7/§8.)
+> **STEP M2-COMMIT — Fix the ESI contact, then commit & push the approved M2
+> work.** Small wrap-up. M2 code is already reviewed/approved (§7); this only
+> swaps in a safe contact and lands M2 on GitHub. Do exactly this; stop and report.
 
-**Context:** This local project is not yet a git repo. The user wants it pushed
-to `https://github.com/MoZ200701/EVE-Online.git` as the project home. The single
-biggest risk is accidentally committing large data artifacts — the ~18 MB SDE
-CSVs in `data/sde_cache/` and `data/sde.duckdb`. Those live under `data/`, which
-`.gitignore` (from M0) already excludes; **you must verify that before
-committing.**
+**Why:** Codex set `config.toml`'s contact to the user's personal email. The repo
+is public and `config.toml` is tracked, so that must not be committed. The user
+chose to use their **Discord handle** as the ESI contact instead (a valid,
+non-personal contact).
 
 **Steps**
+1. In `config.toml`, set the User-Agent contact to the Discord handle (NOT the
+   email):
+   `user_agent = "eve-market-tool/0.1 (contact: Discord m0obot)"`
+2. Confirm **no personal email remains in any tracked file**:
+   `grep -ri "<personal-email-token>" . --exclude-dir=.git` must return nothing.
+3. `python -m pytest -q` still passes (live skipped); ruff clean.
+4. Stage the M2 work + the config change, then **run `git status --short` and
+   confirm: nothing under `data/`, no `*.duckdb`, no SDE-cache CSVs, and
+   `config.toml` shows the Discord handle (no email).** Paste it into §8.
+5. Commit: `feat: ESI client with caching, error-budget, pagination (M2)`.
+6. `git push origin main` (never force). If rejected, `git pull --rebase origin
+   main` then push; STOP on an unresolved conflict.
 
-1. **Verify `.gitignore`** covers at least: `data/`, `*.duckdb`, `__pycache__/`,
-   `.venv/`, `*.egg-info/`, build dirs. If `data/` is not covered, add it. Do
-   NOT remove existing entries.
-2. `git init` (if not already a repo); set the default branch: `git branch -M main`.
-3. `git add -A`, then **run `git status --short` and confirm NO files under
-   `data/`, no SDE `*.csv`, and no `*.duckdb` are staged.** If any are staged,
-   fix `.gitignore` / unstage before continuing. **Paste the `git status --short`
-   output into §8** so the staged set is reviewable.
-4. Add the remote: `git remote add origin https://github.com/MoZ200701/EVE-Online.git`.
-5. Commit. Suggested message: `chore: initial scaffold + SDE loader (M0–M1)`.
-6. Push: `git push -u origin main`.
-   - **If the remote already has commits** (e.g. a README/LICENSE created on
-     GitHub) and the push is rejected, run `git pull --rebase origin main`, then
-     push again. **Never force-push.** If a rebase conflict arises you cannot
-     cleanly resolve, STOP and report in §9.
-7. **Auth:** use whatever git credentials / `gh auth` your environment provides.
-   If you have no push credentials, do NOT improvise — STOP and report in §9.
+**Verification (paste into §8):** the `git status --short` from step 4,
+`git log --oneline -2`, the push summary, and confirmation that
+the personal-email search is empty.
+
+**When done:** append a §8 entry and STOP. M3 (order-book ingestion) is next.
+
+<!-- M2 task (DONE) preserved below for reference -->
+
+> **STEP M2 — Build the ESI HTTP client (caching, error-budget, pagination,
+> retries) with offline unit tests + one gated live test.** This is the
+> load-bearing component of the whole pipeline. Execute exactly this and nothing
+> more — **no ingestion, no storage, no analytics** (that's M3+). The client
+> returns parsed objects in memory only. Stop and report when done.
+
+**Context:** Per §3/§4, ESI is **cache-timed, not rate-limited the usual way**:
+every response carries an `Expires` header and an **error budget**
+(`X-ESI-Error-Limit-Remain` / `X-ESI-Error-Limit-Reset`). Polling faster than
+`Expires` just returns stale cache and wastes requests; burning the error budget
+gets you throttled (HTTP 420). The client must respect all of this so M3's
+ingestion can lean on it. Base URL `https://esi.evetech.net`. We test against the
+**public, no-auth** market endpoints.
+
+**Deliverables**
+
+1. **`esi/models.py`** — pydantic model `MarketOrder` matching ESI
+   `/markets/{region_id}/orders/` items: `order_id:int`, `type_id:int`,
+   `is_buy_order:bool`, `price:float`, `volume_remain:int`, `volume_total:int`,
+   `min_volume:int`, `location_id:int`, `system_id:int|None`, `range:str`,
+   `duration:int`, `issued:datetime`. (Only the model we need to validate the
+   live test — other endpoint models come with their milestones.)
+
+2. **`esi/client.py`** — an **async** client (`httpx.AsyncClient`, HTTP/2 on,
+   gzip via default `Accept-Encoding`, `base_url`, `User-Agent` from `Config`):
+   - `class ESIClient` constructed from a `Config` (or explicit `user_agent` +
+     options). **On init, if `user_agent` still contains `REPLACE_ME`, log a
+     loud WARNING** (this also resolves the deferred §9 item — and update
+     `evemarket info` to print a warning in that case).
+   - A small **in-memory response cache** keyed by `(path, sorted params)`
+     storing `{etag, expires, payload, pages}`. (Persistent cache is deferred to
+     a later milestone — in-memory is fine for M2; note it in a docstring.)
+   - `async def get(path, params=None) -> ESIResponse` (define a small
+     `ESIResponse` dataclass: `data`, `expires`, `etag`, `pages`,
+     `error_limit_remain`, `error_limit_reset`). Behavior:
+     - If a cached entry exists and `now < expires`, **return it without a
+       network call**.
+     - Otherwise send the request; if we hold an `etag` for this key, send
+       `If-None-Match`. On **304**, refresh expiry and return the cached payload.
+     - Parse `Expires` (RFC-1123 via `email.utils.parsedate_to_datetime`),
+       `ETag`, `X-Pages`, and the two error-limit headers; update the cache and
+       the client's tracked error-budget state.
+     - **Error budget:** before issuing a request, if the last-seen
+       `error_limit_remain <= ERROR_LIMIT_THRESHOLD` (default 5), wait
+       `error_limit_reset` seconds. On HTTP **420**, wait out the reset then
+       retry.
+     - **Retries:** on 5xx and transport errors, exponential backoff
+       (`MAX_RETRIES` default 3). Raise a clear `ESIError` on non-retryable 4xx
+       (except 304).
+   - `async def get_paginated(path, params=None) -> list[dict]` — fetch page 1,
+     read `X-Pages`, then fetch pages `2..N` **concurrently** with a bounded
+     `asyncio.Semaphore` (`MAX_CONCURRENCY` default 8), concatenate in page order.
+   - Make backoff **testable**: inject the sleep coroutine and a `now()` clock
+     (constructor args defaulting to `asyncio.sleep` / `datetime.now(timezone.utc)`)
+     so unit tests don't actually sleep or depend on wall-clock.
+   - Tunables (`ERROR_LIMIT_THRESHOLD`, `MAX_RETRIES`, `MAX_CONCURRENCY`,
+     backoff base) as module constants.
+
+3. **CLI `evemarket esi-check`** (`@app.command("esi-check")`, `--region` default
+   from config's first tracked region, `--limit` default 5) — uses the client to
+   fetch **page 1 only** of that region's orders, then prints: total orders on
+   the page, the `X-Pages` value, and `--limit` sample parsed `MarketOrder`s.
+   Runs the async client via `asyncio.run`. (Keep it to one page — be polite.)
+
+4. **`tests/test_esi_client.py`** — **offline unit tests using
+   `httpx.MockTransport`** (no network), covering:
+   - pagination: `X-Pages: 3` → `get_paginated` issues 3 requests and
+     concatenates results;
+   - caching: a second `get` before `expires` makes **no** new request;
+   - 304: when expired and an ETag is held, a `304` returns the cached payload;
+   - error budget: a response with `remain <= threshold` causes the injected
+     sleep to be called with the reset duration (assert via a fake sleep);
+   - retry: two 5xx then a 200 → succeeds after retries (fake sleep);
+   - `MarketOrder` parses a representative payload.
+   Use the injected sleep/clock so tests are instant and deterministic.
+
+5. **One gated live test** in the same file, `test_live_forge_orders`, marked
+   `@pytest.mark.skipif` unless env var **`EVEMARKET_LIVE_TESTS=1`** is set:
+   fetch page 1 of The Forge (10000002) orders against real ESI and assert ≥1
+   row parses as `MarketOrder` and `X-Pages` is present. Default `pytest` runs
+   must NOT hit the network.
 
 **Constraints**
-- No production code changes; don't touch source modules or the §4 architecture.
-- Never commit anything under `data/`, any secret, or any large binary. Never
-  force-push. Never rewrite published history.
+- No ingestion/storage/analytics. The client hands back in-memory objects only.
+- **One new dependency is pre-approved:** add `httpx[http2]` (pulls in `h2`) to
+  enable HTTP/2 per §4. No other new deps without flagging in §9.
+- Async core; the CLI bridges via `asyncio.run`. Cross-platform paths; Windows.
+- Don't change the §4 architecture. If something there blocks you, STOP and
+  raise it in §9.
 
 **Verification (paste into §8)**
-- `git remote -v` shows `origin` → the repo URL.
-- The `git status --short` from step 3 (proving no data/ or large files staged).
-- `git log --oneline -1` shows the initial commit.
-- The push summary confirming remote `main` was updated.
+- `python -m pytest -q` passes with **live tests skipped** (network-free run).
+- `EVEMARKET_LIVE_TESTS=1 python -m pytest -q -k live` passes against real ESI
+  (run once; paste the result).
+- `evemarket esi-check` prints a page-1 order count, `X-Pages`, and sample
+  orders for The Forge. Paste the output.
+- `python -m ruff check .` clean.
+- Confirm the `REPLACE_ME` User-Agent warning fires (note: set a real contact in
+  `config.toml` before the live test so you're a good ESI citizen).
 
-**When done:** append an Execution Log entry to §8 and STOP for review. M2 (ESI
-client) is next.
+**When done:** append an Execution Log entry to §8 (files, the unit + live test
+results, `esi-check` output, deviations/questions). Then STOP for review.
 
 ---
 
@@ -207,6 +297,29 @@ client) is next.
   Risk flagged to Codex: must NOT commit the ~18 MB SDE CSVs or the DuckDB file
   (both under gitignored `data/`); the task gates on a `git status` check before
   commit and forbids force-push. M2 (ESI client) follows.
+- 2026-06-26 — **REPO verdict: DONE.** Independently verified via git: remote =
+  the repo; root commit `04d9c6a`; `git ls-files` shows **no `data/`, `*.duckdb`,
+  or `sde_cache` tracked** — only the small synthetic fixture CSVs (intended).
+  Working tree clean except the HANDOFF log entry. Codex set local `user.name`
+  (Git had email but no name) — fine, no force-push. Next task **M2 (ESI
+  client)** written to §6 — the load-bearing component; folds in the deferred
+  REPLACE_ME User-Agent warning. Review focus when it returns: correct
+  Expires/ETag(304) caching, error-budget backoff (HTTP 420), concurrent
+  pagination, testable injected sleep/clock, and that default `pytest` stays
+  network-free (live test gated behind `EVEMARKET_LIVE_TESTS=1`).
+- 2026-06-26 — **M2 verdict: DONE (code approved).** Read `esi/client.py` in full;
+  ran offline tests myself (11 passed, 1 skipped, network-free). Caching
+  (serve-before-expiry, no network), ETag/`If-None-Match`→304 refresh,
+  error-budget wait + HTTP-420 retry, concurrent `X-Pages` pagination (semaphore,
+  ordered concat), 5xx/transport retries w/ exp backoff, injected sleep/clock —
+  all present and correct. Live `esi-check` pulled real Forge data. Minor
+  non-blocking note: error-budget state is shared but unlocked across concurrent
+  paginated requests — fine for single-hub; revisit if we parallelize regions.
+  ⚠️ PII flag raised in §9 — **M3 NOT drafted until the config.toml email issue
+  is resolved.**
+- 2026-06-26 — User chose **Discord handle `m0obot`** as the ESI contact (safe,
+  non-personal). Wrote **M2-COMMIT** task in §6: swap contact, verify no email in
+  tracked files, then commit+push the approved M2 work. M3 follows after.
 
 ---
 
@@ -313,16 +426,135 @@ Template:
 - Deviations from prompt: none. Used absolute `evemarket.exe` script path because bare scripts are not on `PATH` in this environment, as noted in §6.
 - Questions for Claude: none.
 
+### REPO — Initial git push — 2026-06-26
+- Status: COMPLETE
+- Files created/changed: `HANDOFF.md` only for this log entry after push; committed project files are listed in the initial commit.
+- Commands run + result:
+  - Verified `.gitignore` includes `data/`, `*.duckdb`, `__pycache__/`, `.venv/`, `*.egg-info/`, `build/`, and `dist/`.
+  - `git check-ignore -v data/sde.duckdb data/sde_cache/invTypes.csv data/sde_cache/mapRegions.csv` confirmed generated SDE outputs are ignored by `.gitignore:1:data/`.
+  - `git init`: initialized empty repository in `C:/Users/M0obo/Desktop/Eve Market Tool/.git/`.
+  - `git branch -M main`: succeeded.
+  - `git add -A`: staged project files; only Windows LF-to-CRLF warnings.
+  - Pre-commit `git status --short`:
+    ```text
+    A  .gitignore
+    A  AGENTS.md
+    A  CLAUDE.md
+    A  HANDOFF.md
+    A  README.md
+    A  config.toml
+    A  pyproject.toml
+    A  src/evemarket/__init__.py
+    A  src/evemarket/analytics/__init__.py
+    A  src/evemarket/analytics/fees.py
+    A  src/evemarket/analytics/haul.py
+    A  src/evemarket/analytics/opportunity.py
+    A  src/evemarket/analytics/station_trade.py
+    A  src/evemarket/cli.py
+    A  src/evemarket/config.py
+    A  src/evemarket/esi/__init__.py
+    A  src/evemarket/esi/client.py
+    A  src/evemarket/esi/models.py
+    A  src/evemarket/ingest/__init__.py
+    A  src/evemarket/ingest/backfill.py
+    A  src/evemarket/ingest/history.py
+    A  src/evemarket/ingest/orders.py
+    A  src/evemarket/ingest/prices.py
+    A  src/evemarket/sde/__init__.py
+    A  src/evemarket/sde/load.py
+    A  src/evemarket/store/__init__.py
+    A  src/evemarket/store/quality.py
+    A  src/evemarket/store/schema.py
+    A  src/evemarket/store/writers.py
+    A  tests/fixtures/sde/invMarketGroups.csv
+    A  tests/fixtures/sde/invTypes.csv
+    A  tests/fixtures/sde/mapRegions.csv
+    A  tests/fixtures/sde/mapSolarSystems.csv
+    A  tests/fixtures/sde/staStations.csv
+    A  tests/test_config.py
+    A  tests/test_sde_load.py
+    ```
+  - Confirmed no staged files under `data/`, no live SDE cache CSVs, and no `*.duckdb` files.
+  - `git remote add origin https://github.com/MoZ200701/EVE-Online.git`: succeeded.
+  - `git commit -m "chore: initial scaffold + SDE loader (M0-M1)"`: created root commit `04d9c6a` with 36 files changed.
+  - `git push -u origin main`: succeeded:
+    ```text
+    To https://github.com/MoZ200701/EVE-Online.git
+     * [new branch]      main -> main
+    branch 'main' set up to track 'origin/main'.
+    ```
+- Verification:
+  - `git remote -v`:
+    ```text
+    origin  https://github.com/MoZ200701/EVE-Online.git (fetch)
+    origin  https://github.com/MoZ200701/EVE-Online.git (push)
+    ```
+  - `git log --oneline -1`: `04d9c6a chore: initial scaffold + SDE loader (M0-M1)`
+  - Post-push `git status --short` was clean before this log entry was appended.
+- Deviations from prompt: set local `git config user.name "MoZ200701"` because Git had `user.email` configured but no author name. Did not force-push.
+- Questions for Claude: none.
+
+### M2 — ESI HTTP client — 2026-06-26
+- Status: COMPLETE
+- Files created/changed:
+  - `pyproject.toml`
+  - `config.toml`
+  - `src/evemarket/esi/models.py`
+  - `src/evemarket/esi/client.py`
+  - `src/evemarket/cli.py`
+  - `tests/test_esi_client.py`
+  - `tests/test_config.py`
+  - `HANDOFF.md`
+- Commands run + result:
+  - `python -m pip install -e ".[dev]"`: succeeded; installed pre-approved `httpx[http2]` extras (`h2`, `hpack`, `hyperframe`).
+  - `python -m pytest -q`: `11 passed, 1 skipped in 0.94s` (live test skipped by default; no network).
+  - `python -m ruff check .`: `All checks passed!`
+  - `evemarket info --config missing-placeholder-check.toml`: confirmed CLI warning:
+    ```text
+    Config file missing-placeholder-check.toml not found; using defaults.
+    Data dir: C:\Users\M0obo\Desktop\Eve Market Tool\data
+    Tracked regions: [10000002]
+    User-Agent set: yes
+    WARNING: User-Agent still contains REPLACE_ME contact placeholder.
+    ```
+  - `python -c "import asyncio; from evemarket.esi.client import ESIClient; client=ESIClient(); asyncio.run(client.aclose())"`: confirmed client log warning:
+    ```text
+    ESI User-Agent still contains REPLACE_ME; set a real contact before live ESI requests.
+    ```
+  - `EVEMARKET_LIVE_TESTS=1 python -m pytest -q -k live`: `1 passed, 11 deselected in 2.06s`
+  - `evemarket esi-check --limit 5`:
+    ```text
+    Region: 10000002
+    Page 1 orders: 1000
+    X-Pages: 424
+    Order 7307526145: type=5321 side=sell price=500000.0 remain=44/56
+    Order 7325351938: type=27121 side=sell price=124000000.0 remain=1/1
+    Order 7139753989: type=211 side=sell price=14.54 remain=880000/880000
+    Order 7361003532: type=7291 side=sell price=9480.0 remain=5/17
+    Order 7302283280: type=55719 side=sell price=4450000000.0 remain=1/1
+    ```
+- Verification: offline pytest passed with live test skipped; gated live ESI test passed; `esi-check` fetched page 1 only and parsed sample `MarketOrder`s; ruff clean; placeholder User-Agent warning confirmed in CLI and client.
+- Deviations from prompt: none. Updated `config.toml` contact from `REPLACE_ME` to a real contact before live ESI calls as requested.
+- Questions for Claude: none.
+
 ---
 
 ## 9. Open Questions / Blockers
 
+- ⚠️ **PII / leak risk (NEW, 2026-06-26):** Codex set `config.toml` contact to the
+  user's personal email in the **working tree**. `config.toml` is a TRACKED file;
+  HEAD still has `REPLACE_ME` (email NOT yet pushed — good). **Do NOT commit
+  config.toml with the personal email to the public repo.** Awaiting user
+  decision on contact handling. Until resolved, do not stage `config.toml`.
+  **RESOLVED 2026-06-26:** user chose Discord handle `m0obot`; M2-COMMIT task
+  (§6) swaps it in and verifies no email in tracked files before committing.
 - (deferred, non-blocking, from M0 review) Switch `Config`/`SkillConfig` from
   `pydantic_settings.BaseSettings` to `pydantic.BaseModel` so TOML is the sole
   config source (BaseSettings silently allows env-var overrides). Fold into a
   future small task, not M1.
-- (deferred, from M0 review) `evemarket info` should warn when `user_agent`
-  still contains `REPLACE_ME`. Address with the ESI client in M2.
+- ~~(deferred, from M0 review) `evemarket info` should warn on `REPLACE_ME`
+  User-Agent~~ **folded into the M2 task (§6)** — client logs a loud warning and
+  `evemarket info` updated.
 - ~~BLOCKER for M1: Fuzzwork layout mismatch~~ **RESOLVED 2026-06-26 by Claude.**
   Confirmed via WebFetch that the `*.csv.bz2` per-table files are gone; the five
   needed tables are available **uncompressed** at

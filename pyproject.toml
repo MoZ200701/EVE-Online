@@ -9,7 +9,7 @@ description = "Local EVE Online market trading helper."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "httpx",
+    "httpx[http2]",
     "pydantic",
     "pydantic-settings",
     "polars",
@@ -30,4 +30,3 @@ evemarket = "evemarket.cli:app"
 
 [tool.setuptools.packages.find]
 where = ["src"]
-
