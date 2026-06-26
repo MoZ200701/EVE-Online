@@ -298,7 +298,7 @@ Deviations: used bundled Python absolute path; live run required network escalat
 Template: `### M<n> — <title> — <date> — COMPLETE/BLOCKED` then: Files | Commands+result | Verification | Deviations | Questions.
 
 ### M5b - APScheduler recurring ingest jobs + schedule CLI - 2026-06-26 - COMPLETE
-Files: `src/evemarket/scheduler.py`, `src/evemarket/cli.py`, `tests/test_scheduler.py`, `AGENTS.md`, `HANDOFF.md`. Commit: pending until commit creation.
+Files: `src/evemarket/scheduler.py`, `src/evemarket/cli.py`, `tests/test_scheduler.py`, `AGENTS.md`, `HANDOFF.md`. Commit: `169bde0`.
 Implemented `build_scheduler` with exactly 2 interval jobs (`orders`, `prices`), UTC `BlockingScheduler`, coalesce/max_instances/replace_existing; sync `run_orders_job` + `run_prices_job` wrappers using `asyncio.run`, `ESIClient`, injectable `ingest=`, swallow+log exceptions; CLI `schedule` with `--orders-interval`, `--prices-interval`, `--dry-run`.
 Offline: bare `python -m pytest -q` failed (`python` not on PATH). Bundled Python: `...\python.exe -m pytest -q -p no:cacheprovider --basetemp .pytest-tmp` -> `28 passed, 1 skipped in 3.12s`. `...\python.exe -m ruff check .` -> `All checks passed!`.
 Dry-run: `...\Scripts\evemarket.exe schedule --dry-run` -> `Job orders: interval[0:05:00]`; `Job prices: interval[1:00:00]`; `Dry run: scheduler not started.`
