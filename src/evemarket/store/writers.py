@@ -10,7 +10,7 @@ import duckdb
 import polars as pl
 
 
-ORDER_SCHEMA = {
+ORDER_SCHEMA: dict[str, Any] = {
     "order_id": pl.Int64,
     "type_id": pl.Int64,
     "is_buy_order": pl.Boolean,
@@ -27,7 +27,7 @@ ORDER_SCHEMA = {
     "snapshot_ts": pl.Datetime(time_zone="UTC"),
 }
 
-HISTORY_SCHEMA = {
+HISTORY_SCHEMA: dict[str, Any] = {
     "date": pl.Date,
     "average": pl.Float64,
     "highest": pl.Float64,
@@ -38,7 +38,7 @@ HISTORY_SCHEMA = {
     "type_id": pl.Int64,
 }
 
-PRICE_SCHEMA = {
+PRICE_SCHEMA: dict[str, Any] = {
     "type_id": pl.Int64,
     "adjusted_price": pl.Float64,
     "average_price": pl.Float64,

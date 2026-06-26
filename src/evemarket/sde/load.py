@@ -139,12 +139,15 @@ def load_sde(duckdb_path: Path, csv_files: dict[str, Path]) -> None:
             )
 
 
+def _scalar_count(connection: duckdb.DuckDBPyConnection, table_name: str) -> int:
+    row = connection.execute(f"SELECT count(*) FROM {table_name}").fetchone()
+    return int(row[0]) if row is not None else 0
+
+
 def table_counts(connection: duckdb.DuckDBPyConnection) -> dict[str, int]:
     """Return row counts for all loaded SDE tables."""
 
     return {
-        spec.table_name: connection.execute(
-            f"SELECT count(*) FROM {spec.table_name}"
-        ).fetchone()[0]
+        spec.table_name: _scalar_count(connection, spec.table_name)
         for spec in TABLE_SPECS
     }

@@ -68,70 +68,78 @@ tests/
 
 **Phase 1 — data pipeline**
 - M0 Scaffold ✅ | M1 SDE→`sde.duckdb` ✅ | REPO git+push ✅ | M2 ESI client ✅ | M3 Order snapshots + `ingest_runs` ✅ | M4a ESI daily history → `market_history` ✅ | M4b everef.net bulk backfill ✅ | M5a ESI prices → `market_prices` ✅
-- **M5** Prices ✅ | scheduler (M5b) ✅ | data-quality (M5c) ← **CURRENT: M5c drafted (§6) — Codex to execute (LAST of Phase 1)**
+- **M5** Prices ✅ | scheduler (M5b) ✅ | data-quality (M5c) ✅ — Phase 1 feature-complete. ← **CURRENT: M5-FIX (typing cleanup, mypy clean) drafted (§6) — Codex to execute before Phase 2.**
 
 **Phase 2 — deterministic analytics (stubbed):** `fees.py`, `opportunity.py` (ProfitOpportunity), `station_trade.py` (first scanner), then `haul.py`.
 
 Definition of done is per-step in each task prompt.
 
-## 6. Current Task (Codex) — M5c: data-quality checks → `quality.py` + `quality-check` CLI
+## 6. Current Task (Codex) — M5-FIX: Phase-1 typing cleanup (`mypy src/` clean)
 
-M5b DONE (§7). **M5 split → M5a (prices) ✅ | M5b (scheduler) ✅ | M5c (data-quality, THIS — LAST of Phase 1).** This = M5c only: a READ-ONLY quality module that inspects the already-populated `market.duckdb` tables and returns pass/warn/fail check results, plus a CLI `quality-check` command. **NO writes/mutations to any table, NO new ingest, NO scheduler changes, NO analytics.** **CLOSED-WORLD: write only the listed files; all you need is in the Context Pack. Missing detail → STOP + §9, do NOT scan the tree.**
+M5c DONE (§7) → Phase 1 feature-complete. Planner full-audit (§7) found ONE standards gap: **`mypy src/` reports 5 errors** (documented check in CLAUDE.md, never gated in any task, so never run). NONE are runtime bugs — all typing/stub issues. This task = make `mypy src/` clean with **minimal, behavior-preserving** edits. **NO behavior changes, NO new features, NO logic edits beyond the exact lines below. Tests must stay at `36 passed, 1 skipped` unchanged.** **CLOSED-WORLD: touch only the listed files; all you need is in this pack. Missing detail → STOP + §9, do NOT scan the tree.**
 
 ### CONTEXT PACK
 
 **Files in scope (touch nothing else):**
-- EDIT `src/evemarket/store/quality.py` — currently a stub (`"""Data quality checks stub."""` + `# TODO: M5`). Replace its body with the `QualityCheck` dataclass + `run_quality_checks` + private `_check_*` fns.
-- EDIT `src/evemarket/cli.py` — add `quality-check` command (append a new `@app.command`; do NOT touch existing commands).
-- CREATE `tests/test_quality.py`.
+- EDIT `pyproject.toml` — add a `[tool.mypy]` config block (see #4).
+- EDIT `src/evemarket/store/writers.py` — annotate the 3 schema-dict constants (see #1).
+- EDIT `src/evemarket/sde/load.py` — guard one `.fetchone()[0]` (see #2).
 - EDIT `HANDOFF.md` §8 (log).
+- (NO change needed in `scheduler.py` — its 2 errors are fixed via the `[tool.mypy]` override in #4.)
 
-**DB tables to inspect (verbatim DDL — already created by `ensure_market_db`; quality.py only SELECTs, never writes):**
-- `ingest_runs(run_id TEXT, source TEXT, region_id BIGINT, snapshot_ts TIMESTAMPTZ, started_at TIMESTAMPTZ, finished_at TIMESTAMPTZ, status TEXT, order_count BIGINT, pages INTEGER, esi_expires TIMESTAMPTZ, snapshot_path TEXT, error TEXT)`. `status` ∈ {`'success'`,`'failed'`}.
-- `market_history(region_id BIGINT, type_id BIGINT, date DATE, average DOUBLE, highest DOUBLE, lowest DOUBLE, order_count BIGINT, volume BIGINT, PK(region_id,type_id,date))`.
-- `market_prices(type_id BIGINT, adjusted_price DOUBLE, average_price DOUBLE, snapshot_ts TIMESTAMPTZ, PK(type_id,snapshot_ts))`. NOTE: `average_price` is legitimately NULL for ~12% of rows (do NOT flag null `average_price`); `adjusted_price` is expected present + positive.
+**The 5 mypy errors to clear (verbatim from `python -m mypy src/`):**
+1. `store/writers.py:67` — `Argument "schema" to "DataFrame" has incompatible type "dict[str, object]"` (this is `ORDER_SCHEMA`).
+2. `store/writers.py:131` — same, for `PRICE_SCHEMA`.
+3. `sde/load.py:146` — `Value of type "tuple[Any, ...] | None" is not indexable` (the `.fetchone()[0]` in `table_counts`).
+4. `scheduler.py:9` — `Library stubs not installed for "pytz"`.
+5. `scheduler.py:10` — `Skipping analyzing "apscheduler.schedulers.blocking": module is installed, but missing library stubs or py.typed marker`.
 
-**Caller contracts (verbatim — already exist, just call them):**
-- `evemarket.store.schema.ensure_market_db(path: str|Path) -> duckdb.DuckDBPyConnection` — opens `market.duckdb`, `SET TimeZone='UTC'`, ensures the 3 tables above, `with`-able. Reading TIMESTAMPTZ cols returns tz-aware UTC `datetime` (pytz is a declared dep). Reading a `DATE` col returns `datetime.date`.
-- `evemarket.config.Config` — `data_dir: Path` (market db = `config.data_dir.expanduser()/"market.duckdb"`). `evemarket.config.load_config(path) -> Config`.
-- DuckDB conn API: `conn.execute("SELECT ...").fetchone()` → tuple or `None`; `.fetchall()` → list of tuples.
-- **For TESTS ONLY** (to seed rows — use these existing writers, all in `evemarket.store.writers`):
-  - `write_prices(conn, prices: list[dict], snapshot_ts: datetime) -> int` — each dict `{"type_id": int, "adjusted_price": float|None, "average_price": float|None}`; upserts into `market_prices` at `snapshot_ts`.
-  - `write_history_bulk(conn, rows: list[dict]) -> int` — each row carries ALL 8 keys: `date` (a `datetime.date`), `average`,`highest`,`lowest` (float), `order_count`,`volume` (int), `region_id`,`type_id` (int). Upserts into `market_history`.
-  - `record_ingest_run(conn, **fields)` — required keys `run_id, source, region_id, snapshot_ts, started_at, finished_at, status, order_count, pages`; optional `esi_expires, snapshot_path, error`. Pass tz-aware UTC datetimes for ts cols.
-  - (Tests may also seed via raw `conn.execute("INSERT ...")` using the DDL above — either is fine.)
-- CLI pattern (mirror existing commands in `cli.py`): `@app.command("quality-check")`, `--config/-c` default `Path("config.toml")` → `load_config(...)`. `typer`, `Path`, `load_config` already imported at top of `cli.py`; add `from evemarket.store.schema import ensure_market_db` and `from evemarket.store.quality import run_quality_checks`.
+**Root causes (so the fix is exact, not guesswork):**
+- writers.py:67/131 — `ORDER_SCHEMA`/`PRICE_SCHEMA` mix a polars *instance* `pl.Datetime(time_zone="UTC")` with *classes* (`pl.Int64` etc.), so mypy infers the dict as `dict[str, object]`, which polars' `schema=` param rejects. (`HISTORY_SCHEMA` is all-classes so it wasn't flagged — annotate it too for uniformity.)
+- sde/load.py:146 — `duckdb` connection is typed there, so `.fetchone()` is `tuple | None`; indexing `[0]` is unsafe to mypy even though `SELECT count(*)` always returns a row.
+- scheduler.py:9/10 — `pytz` and `apscheduler` ship no type stubs / `py.typed`; pure third-party gap, not our code.
 
-**Deliverables / decisions (do exactly this):**
-1. **`QualityCheck`** (frozen dataclass in `quality.py`): `name: str`, `status: str` (one of `"ok"`/`"warn"`/`"fail"`), `detail: str`.
-2. **`run_quality_checks(conn, *, now=None, max_price_age_hours: float = 24.0, max_history_age_days: int = 3) -> list[QualityCheck]`** — `now = _ensure_utc(now or datetime.now(timezone.utc))` (inject `now` for deterministic stale tests). Returns the 5 checks below IN THIS ORDER. Each `_check_*` takes what it needs and returns one `QualityCheck`. Add a private `_ensure_utc(value)` helper (tz-naive→assume UTC; else `astimezone(UTC)`) mirroring the one in `writers.py`.
-3. **`_check_stale_prices(conn, now, max_price_age_hours)`** — name `"stale_prices"`. `latest = conn.execute("SELECT max(snapshot_ts) FROM market_prices").fetchone()[0]`. If `None` → `("warn","no price snapshots")`. Else `latest=_ensure_utc(latest)`; `age_h=(now-latest).total_seconds()/3600`; status `"warn"` if `age_h > max_price_age_hours` else `"ok"`; detail `f"latest={latest.isoformat()} age={age_h:.1f}h"`.
-4. **`_check_stale_history(conn, now, max_history_age_days)`** — name `"stale_history"`. `latest = SELECT max(date) FROM market_history`. If `None` → `("warn","no history rows")`. Else `age_d=(now.date()-latest).days`; status `"warn"` if `age_d > max_history_age_days` else `"ok"`; detail `f"latest={latest.isoformat()} age={age_d}d"`.
-5. **`_check_price_anomalies(conn)`** — name `"price_anomalies"`, inspect the LATEST snapshot only. `latest_ts = SELECT max(snapshot_ts) FROM market_prices`. If `None` → `("ok","no price snapshots")`. Else: `neg = SELECT count(*) FROM market_prices WHERE snapshot_ts = ? AND adjusted_price < 0`; `nul = SELECT count(*) FROM market_prices WHERE snapshot_ts = ? AND adjusted_price IS NULL` (bind `latest_ts`). status: `"fail"` if `neg>0`; elif `nul>0` `"warn"`; else `"ok"`. detail `f"negative={neg} null_adjusted={nul} (latest snapshot)"`. (Do NOT consider `average_price` — legitimately nullable.)
-6. **`_check_history_anomalies(conn)`** — name `"history_anomalies"`. `bad = SELECT count(*) FROM market_history WHERE highest < lowest OR average < 0 OR lowest < 0 OR highest < 0 OR volume < 0 OR order_count < 0`. status `"fail"` if `bad>0` else `"ok"`; detail `f"{bad} invalid rows"`. (Strict `< 0` / `highest<lowest` only — do NOT flag legit zeros, avoids false positives on real data.)
-7. **`_check_failed_runs(conn)`** — name `"failed_runs"`. `bad = SELECT count(*) FROM ingest_runs WHERE status='failed'`. If `bad==0` → `("ok","no failed runs")`. Else fetch latest: `SELECT source, error FROM ingest_runs WHERE status='failed' ORDER BY started_at DESC LIMIT 1`; status `"warn"`; detail `f"{bad} failed runs; latest {source}: {error}"`.
-8. **CLI `quality-check`** — opts `--config/-c` (default `config.toml`); `--max-price-age-hours` (float, default 24.0); `--max-history-age-days` (int, default 3). Flow: `cfg=load_config(config)`; `market_db = cfg.data_dir.expanduser()/"market.duckdb"`; `with ensure_market_db(market_db) as conn: checks = run_quality_checks(conn, max_price_age_hours=..., max_history_age_days=...)`; for each: `typer.echo(f"[{c.status.upper()}] {c.name}: {c.detail}")`. After printing, if `any(c.status=="fail" for c in checks)` → `raise typer.Exit(code=1)` (nonzero exit on FAIL is intentional for ops/monitoring; lines still print first).
+**Caller contracts (verbatim — current code, for the exact edit points):**
+- `store/writers.py` top already has `from typing import Any` (line 7) and `import polars as pl`. The 3 module-level constants are `ORDER_SCHEMA = {...}` (line ~13), `HISTORY_SCHEMA = {...}` (line ~30), `PRICE_SCHEMA = {...}` (line ~41). They are consumed as `pl.DataFrame(rows, schema=<NAME>, strict=True)` and (for HISTORY) `list(HISTORY_SCHEMA)` in `backfill.py` — annotation does not change either use.
+- `sde/load.py` `table_counts(connection)` (line ~142) returns `{spec.table_name: connection.execute(f"SELECT count(*) FROM {spec.table_name}").fetchone()[0] for spec in TABLE_SPECS}`.
 
-**DEFERRED (do NOT add in M5c):** history **gap-detection** (missing dates between min/max per region/type) and **row-count-delta vs prior run** (compare latest two `ingest_runs.order_count` per source) — both are follow-up checks; out of scope here. Do not implement.
+**Deliverables / decisions (do EXACTLY this — no extra edits):**
+1. **writers.py** — add an explicit annotation to each of the 3 schema constants so mypy accepts them as a valid polars schema mapping: `ORDER_SCHEMA: dict[str, Any] = {...}`, `HISTORY_SCHEMA: dict[str, Any] = {...}`, `PRICE_SCHEMA: dict[str, Any] = {...}`. (`Any` is already imported. Do NOT change any dict contents or any other line.)
+2. **sde/load.py** — replace the unsafe comprehension value with a None-guarded read. Add a tiny private helper above `table_counts`:
+   ```python
+   def _scalar_count(connection: duckdb.DuckDBPyConnection, table_name: str) -> int:
+       row = connection.execute(f"SELECT count(*) FROM {table_name}").fetchone()
+       return int(row[0]) if row is not None else 0
+   ```
+   and make `table_counts` return `{spec.table_name: _scalar_count(connection, spec.table_name) for spec in TABLE_SPECS}`. (Behavior identical for a real DB; only adds None-safety + an `int(...)` cast.)
+3. **pyproject.toml** — add a `[tool.mypy]` block (NO new dependency — use an override to ignore the untyped third-party imports):
+   ```toml
+   [tool.mypy]
+   python_version = "3.11"
 
-**Conventions to mirror:** READ-ONLY (SELECT only — never INSERT/UPDATE/DELETE in quality.py); tz-aware UTC handling via `_ensure_utc`; injectable `now` for deterministic stale tests; strict-`<0` anomaly predicates (no false positives on zeros); no new deps (`duckdb`/stdlib only); terse; `data/`/`*.duckdb` stay untracked.
+   [[tool.mypy.overrides]]
+   module = ["apscheduler.*", "pytz"]
+   ignore_missing_imports = true
+   ```
+   Place it after the existing `[tool.setuptools.packages.find]` section (or anywhere valid at top level). Do NOT add `types-pytz` or any dep — the override alone clears errors #4/#5.
 
-**Constraints** — no new deps; don't change §4 locked decisions; do NOT modify existing `cli.py` commands or any ingest/store/schema code (quality.py is the only store file edited); `data/` untracked (gate `git status --short`). Blocked/missing-context → STOP, write §9.
+**Conventions to mirror:** minimal surgical diff; behavior-preserving (no test should change); no new deps (typing override, not a stub package); terse; `data/`/`*.duckdb` stay untracked.
+
+**Constraints** — NO new deps; NO behavior/logic changes beyond the 3 edits above; do NOT touch any ingest/esi/store-schema/scheduler/cli code other than the 2 named files; `data/` untracked (gate `git status --short`). Blocked/missing-context → STOP, write §9. If after these edits `mypy src/` shows errors in files NOT listed here, STOP + write §9 (do not expand scope).
 
 **Verification (paste §8, terse per §2):**
-- `python -m pytest -q` pass, network-free (seed a tmp `market.duckdb` via `ensure_market_db` + writers, inject `now`):
-  - **all-good** db (fresh prices snapshot at `now`, history `date=now.date()`, valid values, no failed runs) → all 5 checks `"ok"`.
-  - **stale** (prices `snapshot_ts=now-48h`, history `date=now-10d`) → `stale_prices` + `stale_history` `"warn"`.
-  - **price_anomalies**: latest snapshot with a negative `adjusted_price` → `"fail"`; a snapshot whose only issue is a NULL `adjusted_price` → `"warn"`; a legit NULL `average_price` alone → `"ok"`.
-  - **history_anomalies**: a row with `highest < lowest` → `"fail"`.
-  - **failed_runs**: one `record_ingest_run(status='failed', ...)` → `"warn"` with the source/error in detail.
-  - **empty** db → `stale_prices`/`stale_history` `"warn"` (no rows), other 3 `"ok"`.
-  - Existing M5b/M5a/M4/M3 tests stay green.
-- `python -m ruff check .` clean.
-- Live (READ-ONLY, no network): `evemarket quality-check` against the real `market.duckdb` (already holds M5a prices + M4 history); paste the 5 printed `[STATUS] name: detail` lines + the process exit code. (A nonzero exit only if a real FAIL is present — that's the check working.)
-- Pre-commit `git status --short`: no `data/`/`*.duckdb`/parquet staged (expect `store/quality.py`, `cli.py`, `tests/test_quality.py`, `HANDOFF.md`). Commit `feat: data-quality checks + quality-check CLI (M5c)`; `git push origin main` (no force). Include `HANDOFF.md`.
+- `python -m mypy src/` → **clean** (`Success: no issues found in 23 source files`). THIS is the new gate for this task.
+- `python -m pytest -q` → **`36 passed, 1 skipped`** (UNCHANGED — proves behavior-preserving).
+- `python -m ruff check .` → clean.
+- NO live run needed (pure typing/refactor, no network, no new behavior).
+- Pre-commit `git status --short`: only `pyproject.toml`, `src/evemarket/store/writers.py`, `src/evemarket/sde/load.py`, `HANDOFF.md`; no `data/`/`*.duckdb`/parquet staged. Commit `fix: resolve mypy type errors across Phase 1 (M5-FIX)`; `git push origin main` (no force). Include `HANDOFF.md`.
 
-When done: append §8 entry (terse, **INCLUDE the commit hash**) and STOP. M5c completes Phase 1 — after it, Phase 2 (deterministic analytics: `fees.py` → `opportunity.py` → `station_trade.py`) begins.
+When done: append §8 entry (terse, **INCLUDE the commit hash**) and STOP. After M5-FIX → Phase 1 fully green to standard; then Phase 2 (analytics: `fees.py` first) on user go.
+
+<!-- ===== M5c task (DONE, kept for reference) ===== -->
+### [DONE] M5c: data-quality checks → `quality.py` + `quality-check` CLI
+
+Read-only `store/quality.py`: `QualityCheck(name,status,detail)` + `run_quality_checks(conn, *, now=None, max_price_age_hours=24, max_history_age_days=3)` → 5 ordered checks (`stale_prices`, `stale_history`, `price_anomalies` [adjusted<0→fail/NULL→warn, average NULL ignored], `history_anomalies` [strict `<0`/`highest<lowest`→fail], `failed_runs` [warn + latest source/error]). CLI `quality-check --max-price-age-hours/--max-history-age-days`, prints `[STATUS] name: detail`, `typer.Exit(1)` on any fail. Committed `7eb3760`. Completed Phase 1 feature set.
 
 <!-- ===== M5b task (DONE, kept for reference) ===== -->
 ### [DONE] M5b: APScheduler wiring → recurring ingest jobs
@@ -252,6 +260,10 @@ When done: append §8 entry (terse, **INCLUDE the commit hash** — M3-FIX2 omit
 
 - **M5c drafted (Context Pack) — LAST of Phase 1.** Data-quality checks. Verified all contracts against live source (`schema.py` 3-table DDL, `writers.py` signatures, the `quality.py` stub): pack pastes the verbatim DDL of `ingest_runs`/`market_history`/`market_prices` so Codex writes SQL blind, + writer signatures (`write_prices`/`write_history_bulk`/`record_ingest_run`) for test seeding. **Design:** fill the `store/quality.py` stub with `QualityCheck(name,status,detail)` frozen dataclass + `run_quality_checks(conn, *, now=None, max_price_age_hours=24, max_history_age_days=3)` returning 5 READ-ONLY checks in order: `stale_prices` (newest `market_prices.snapshot_ts` age, warn>24h), `stale_history` (newest `market_history.date` age, warn>3d), `price_anomalies` (latest snapshot: `adjusted_price<0`→fail, NULL→warn; `average_price` NULL ignored — legit ~12%), `history_anomalies` (`highest<lowest`/negative→fail; strict `<0` to avoid false-positives on zeros), `failed_runs` (`ingest_runs.status='failed'` count→warn + latest source/error). CLI `quality-check --max-price-age-hours/--max-history-age-days`, prints `[STATUS] name: detail` per check, `typer.Exit(1)` on any FAIL (ops signal). **Held tight:** quality.py SELECTs only (never mutates); injectable `now` for deterministic stale tests; explicitly DEFERRED history gap-detection + row-count-delta-vs-prior-run (heavier follow-ups, noted in §6 as do-not-implement). Live check is READ-ONLY (no network) against the real db. Review focus on return: read-only (no INSERT/UPDATE in quality.py), all 5 checks correct status logic, `average_price` NULL NOT flagged, strict-`<0` predicates, injectable-`now` offline tests cover ok/warn/fail/empty, exit-1-on-fail, existing commands/tests untouched, no new deps, `data/` untracked, commit hash in §8.
 
+- **M5c REVIEW: DONE — PHASE 1 COMPLETE.** Read all M5c code (`quality.py`, `cli.py` quality-check cmd, `test_quality.py`). Planner clean-env (bare `python`, all deps, NO manual installs): `pytest --basetemp <scratch>` → `36 passed, 1 skipped`; `ruff` clean. Commit `7eb3760` (+`579a891` docs); tree clean. All focus pts pass: **quality.py is READ-ONLY** — `grep -iE "insert|update|delete|create table|drop table"` → none (verified, the key risk); `QualityCheck(name,status,detail)` + 5 ordered checks exactly as specced; status logic correct — `stale_prices`/`stale_history` warn-on-age (injectable `now`), `price_anomalies` `adjusted_price<0`→fail / NULL→warn / **`average_price` NULL ignored** (dedicated test asserts ok), `history_anomalies` strict-`<0`+`highest<lowest`→fail (no zero false-positives), `failed_runs` warn + latest source/error in detail; empty-db test → only stale_* warn, rest ok; CLI `quality-check --max-price-age-hours/--max-history-age-days` prints `[STATUS] name: detail` + `typer.Exit(1)` on any fail. Tests cover ok/warn/fail/empty per case. Live (read-only, no network) vs real db: all 5 `[OK]`, `EXIT_CODE=0` (`stale_history age=2d`, prices age=0.5h, 0 anomalies, 0 failed runs). Existing commands/ingest/store untouched; M5b/M5a/M4/M3 green; no new deps; `data/` untracked. No deviations of note (same benign `git status` global-ignore warning). **M0–M5c DONE → Phase 1 data pipeline COMPLETE.** Next: Phase 2 deterministic analytics — `analytics/fees.py` first (Jita broker fee + sales tax, skill/standings-aware), then `opportunity.py` (`ProfitOpportunity`/`Acquisition`/`Disposal` seam), then `station_trade.py` scanner. Awaiting user go to draft the `fees.py` Context Pack.
+
+- **PHASE 1 FULL AUDIT (Claude) — meets standards except mypy.** Read every Phase-1 module (`config`,`cli`,`esi/{client,models}`,`sde/load`,`ingest/{orders,history,prices,backfill}`,`store/{schema,writers,quality}`,`scheduler`). Clean-env: `pytest` `36 passed,1 skipped`; `ruff` clean; `git ls-files` → NO `.duckdb`/`.parquet`/`sde_cache`/`data/` tracked (only fixtures); §4 locked architecture honored throughout; conventions uniform (explicit polars schemas, idempotent PK upserts, tz-aware UTC TIMESTAMPTZ, sample-only validation, success/fail ingest_runs split). **ONE gap:** `python -m mypy src/` → **5 errors / 3 files** (writers.py:67,131 polars `schema=` dict typing; sde/load.py:146 `.fetchone()[0]` None-unsafety; scheduler.py:9,10 missing pytz/apscheduler stubs). mypy is a CLAUDE.md-documented command but was NEVER in any task's verification gate → never run. NONE are runtime bugs. Accepted non-blockers re-confirmed still benign: everef present-but-empty-file count quirk, duplicated fetch-loop body (style), ESI unlocked error-budget across concurrent pages (fine single-hub). → Drafted **M5-FIX (§6)**: annotate 3 writers schema dicts `dict[str, Any]`, None-guard sde/load count via `_scalar_count`, add `[tool.mypy]` override ignoring `apscheduler.*`/`pytz` (NO new dep). Gate = `mypy src/` clean + tests UNCHANGED (36/1). Review focus on return: mypy clean, zero behavior change (test counts identical), no new deps, only the 3 files+pyproject touched, commit hash in §8.
+
 ## 8. Execution Log (Codex)
 
 ### M0 — Scaffold — 2026-06-26 — COMPLETE
@@ -322,6 +334,14 @@ Offline: bare `python -m pytest -q` failed (`python` not on PATH). Bundled Pytho
 Live read-only: `...\Scripts\evemarket.exe quality-check` -> `[OK] stale_prices: latest=2026-06-26T08:17:44.117069+00:00 age=0.5h`; `[OK] stale_history: latest=2026-06-24 age=2d`; `[OK] price_anomalies: negative=0 null_adjusted=0 (latest snapshot)`; `[OK] history_anomalies: 0 invalid rows`; `[OK] failed_runs: no failed runs`; `EXIT_CODE=0`.
 Tests added: all-good all 5 ok; stale prices/history warn; negative adjusted fail; null adjusted warn; null average only ok; highest<lowest fail; failed run warn with source/error; empty db warns stale only; existing M5b/M5a/M4/M3 green.
 Pre-commit `git status --short`: `HANDOFF.md`, `src/evemarket/cli.py`, `src/evemarket/store/quality.py`, `tests/test_quality.py`; no `data/`/`*.duckdb`/parquet staged.
+Deviations: used bundled Python absolute path; `git status` warned user global ignore inaccessible (`C:\Users\M0obo/.config/git/ignore` permission denied); no behavior impact. Questions: none.
+
+### M5-FIX - Phase-1 mypy cleanup - 2026-06-26 - COMPLETE
+Files: `pyproject.toml`, `src/evemarket/store/writers.py`, `src/evemarket/sde/load.py`, `HANDOFF.md`. Commit: pending until commit creation.
+Implemented schema constant annotations `dict[str, Any]`; `_scalar_count` None guard + `int(...)` cast for `table_counts`; `[tool.mypy]` override for `apscheduler.*`/`pytz`; no deps/no behavior changes.
+Offline: bare `python -m mypy src/`, `python -m pytest -q`, `python -m ruff check .` all failed (`python` not on PATH). Bundled Python: `...\python.exe -m mypy src/` -> `Success: no issues found in 23 source files`; `...\python.exe -m pytest -q -p no:cacheprovider --basetemp .pytest-tmp` -> `36 passed, 1 skipped in 2.87s`; `...\python.exe -m ruff check .` -> `All checks passed!`.
+Live: none (pure typing cleanup).
+Pre-commit `git status --short`: `HANDOFF.md`, `pyproject.toml`, `src/evemarket/sde/load.py`, `src/evemarket/store/writers.py`; no `data/`/`*.duckdb`/parquet staged.
 Deviations: used bundled Python absolute path; `git status` warned user global ignore inaccessible (`C:\Users\M0obo/.config/git/ignore` permission denied); no behavior impact. Questions: none.
 
 ## 9. Open Questions / Blockers

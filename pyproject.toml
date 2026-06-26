@@ -31,3 +31,10 @@ evemarket = "evemarket.cli:app"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.mypy]
+python_version = "3.11"
+
+[[tool.mypy.overrides]]
+module = ["apscheduler.*", "pytz"]
+ignore_missing_imports = true
