@@ -68,70 +68,75 @@ tests/
 
 **Phase 1 — data pipeline**
 - M0 Scaffold ✅ | M1 SDE→`sde.duckdb` ✅ | REPO git+push ✅ | M2 ESI client ✅ | M3 Order snapshots + `ingest_runs` ✅ | M4a ESI daily history → `market_history` ✅ | M4b everef.net bulk backfill ✅ | M5a ESI prices → `market_prices` ✅
-- **M5** Prices ✅ | scheduler (M5b) + data-quality (M5c) ← **CURRENT: M5b drafted (§6) — Codex to execute**
+- **M5** Prices ✅ | scheduler (M5b) ✅ | data-quality (M5c) ← **CURRENT: M5c drafted (§6) — Codex to execute (LAST of Phase 1)**
 
 **Phase 2 — deterministic analytics (stubbed):** `fees.py`, `opportunity.py` (ProfitOpportunity), `station_trade.py` (first scanner), then `haul.py`.
 
 Definition of done is per-step in each task prompt.
 
-## 6. Current Task (Codex) — M5b: APScheduler wiring → recurring ingest jobs
+## 6. Current Task (Codex) — M5c: data-quality checks → `quality.py` + `quality-check` CLI
 
-M5a DONE (§7). **M5 split → M5a (prices ingest) ✅ | M5b (APScheduler wiring, THIS) | M5c (data-quality checks, last).** This = M5b only: a `BlockingScheduler` that runs the ALREADY-BUILT ingests on a cadence (orders snapshot + prices), plus a CLI `schedule` command to start it. **NO new ingest logic, NO quality checks, NO analytics, NO history scheduling (deferred — see note).** **CLOSED-WORLD: write only the listed files; all you need is in the Context Pack. Missing detail → STOP + §9, do NOT scan the tree.**
+M5b DONE (§7). **M5 split → M5a (prices) ✅ | M5b (scheduler) ✅ | M5c (data-quality, THIS — LAST of Phase 1).** This = M5c only: a READ-ONLY quality module that inspects the already-populated `market.duckdb` tables and returns pass/warn/fail check results, plus a CLI `quality-check` command. **NO writes/mutations to any table, NO new ingest, NO scheduler changes, NO analytics.** **CLOSED-WORLD: write only the listed files; all you need is in the Context Pack. Missing detail → STOP + §9, do NOT scan the tree.**
 
 ### CONTEXT PACK
 
 **Files in scope (touch nothing else):**
-- CREATE `src/evemarket/scheduler.py` — `build_scheduler(...)`, `run_orders_job(...)`, `run_prices_job(...)`.
-- EDIT `src/evemarket/cli.py` — add `schedule` command (append a new `@app.command`; do NOT touch existing commands).
-- CREATE `tests/test_scheduler.py`.
+- EDIT `src/evemarket/store/quality.py` — currently a stub (`"""Data quality checks stub."""` + `# TODO: M5`). Replace its body with the `QualityCheck` dataclass + `run_quality_checks` + private `_check_*` fns.
+- EDIT `src/evemarket/cli.py` — add `quality-check` command (append a new `@app.command`; do NOT touch existing commands).
+- CREATE `tests/test_quality.py`.
 - EDIT `HANDOFF.md` §8 (log).
-- ALSO STAGE (already-modified, no further edits needed) `AGENTS.md` — the closed-world workflow paragraph is sitting uncommitted in the working tree; fold it into THIS commit to clear a loose end. Do not re-edit it.
 
-**APScheduler facts (installed `apscheduler 3.11.2` → 3.x API, verbatim — already a declared dep, do NOT add anything):**
-- `from apscheduler.schedulers.blocking import BlockingScheduler`. Construct `BlockingScheduler(timezone=pytz.utc)` (`import pytz`; already a dep).
-- Register jobs BEFORE start: `scheduler.add_job(func, "interval", minutes=N, args=[config], id="<id>", coalesce=True, max_instances=1, replace_existing=True)`.
-- `scheduler.get_jobs()` → list of `Job`; each `job.id` (str), `job.trigger` is an `IntervalTrigger` whose `job.trigger.interval` is a `datetime.timedelta`. Jobs can be added to a not-yet-started scheduler and inspected this way (no `.start()` needed for tests).
-- `scheduler.start()` BLOCKS the calling thread until shutdown; `scheduler.shutdown()` stops it. Tests must NEVER call `.start()`.
+**DB tables to inspect (verbatim DDL — already created by `ensure_market_db`; quality.py only SELECTs, never writes):**
+- `ingest_runs(run_id TEXT, source TEXT, region_id BIGINT, snapshot_ts TIMESTAMPTZ, started_at TIMESTAMPTZ, finished_at TIMESTAMPTZ, status TEXT, order_count BIGINT, pages INTEGER, esi_expires TIMESTAMPTZ, snapshot_path TEXT, error TEXT)`. `status` ∈ {`'success'`,`'failed'`}.
+- `market_history(region_id BIGINT, type_id BIGINT, date DATE, average DOUBLE, highest DOUBLE, lowest DOUBLE, order_count BIGINT, volume BIGINT, PK(region_id,type_id,date))`.
+- `market_prices(type_id BIGINT, adjusted_price DOUBLE, average_price DOUBLE, snapshot_ts TIMESTAMPTZ, PK(type_id,snapshot_ts))`. NOTE: `average_price` is legitimately NULL for ~12% of rows (do NOT flag null `average_price`); `adjusted_price` is expected present + positive.
 
 **Caller contracts (verbatim — already exist, just call them):**
-- `evemarket.esi.client.ESIClient` — `async with ESIClient(config=config) as client: ...`. **Construction + `__aenter__`/`__aexit__` make NO network call** (confirmed M2 — httpx wrapper; network only on `.get(...)`), so tests that enter the context with an injected no-network ingest run fully offline.
-- `evemarket.ingest.orders.ingest_orders(client, config, region_id, *, now=None) -> IngestResult` — async; one regional order-book snapshot. `IngestResult` has `.run_id: str`, `.region_id: int`, `.order_count: int`, `.status: str`.
-- `evemarket.ingest.prices.ingest_prices(client, config, *, now=None) -> PricesIngestResult` — async; one global prices snapshot. `PricesIngestResult` has `.run_id: str`, `.price_count: int`, `.status: str`.
-- `evemarket.config.Config` — fields used: `tracked_regions: list[int]` (loop orders over these). `evemarket.config.load_config(path) -> Config`.
-- CLI pattern (mirror existing commands in `cli.py`): `@app.command("schedule")`, `--config/-c` default `Path("config.toml")` → `load_config(...)`. Imports `asyncio`, `typer`, `Path`, `load_config`, `ESIClient` already present at top of `cli.py`; add `from evemarket.scheduler import build_scheduler`.
+- `evemarket.store.schema.ensure_market_db(path: str|Path) -> duckdb.DuckDBPyConnection` — opens `market.duckdb`, `SET TimeZone='UTC'`, ensures the 3 tables above, `with`-able. Reading TIMESTAMPTZ cols returns tz-aware UTC `datetime` (pytz is a declared dep). Reading a `DATE` col returns `datetime.date`.
+- `evemarket.config.Config` — `data_dir: Path` (market db = `config.data_dir.expanduser()/"market.duckdb"`). `evemarket.config.load_config(path) -> Config`.
+- DuckDB conn API: `conn.execute("SELECT ...").fetchone()` → tuple or `None`; `.fetchall()` → list of tuples.
+- **For TESTS ONLY** (to seed rows — use these existing writers, all in `evemarket.store.writers`):
+  - `write_prices(conn, prices: list[dict], snapshot_ts: datetime) -> int` — each dict `{"type_id": int, "adjusted_price": float|None, "average_price": float|None}`; upserts into `market_prices` at `snapshot_ts`.
+  - `write_history_bulk(conn, rows: list[dict]) -> int` — each row carries ALL 8 keys: `date` (a `datetime.date`), `average`,`highest`,`lowest` (float), `order_count`,`volume` (int), `region_id`,`type_id` (int). Upserts into `market_history`.
+  - `record_ingest_run(conn, **fields)` — required keys `run_id, source, region_id, snapshot_ts, started_at, finished_at, status, order_count, pages`; optional `esi_expires, snapshot_path, error`. Pass tz-aware UTC datetimes for ts cols.
+  - (Tests may also seed via raw `conn.execute("INSERT ...")` using the DDL above — either is fine.)
+- CLI pattern (mirror existing commands in `cli.py`): `@app.command("quality-check")`, `--config/-c` default `Path("config.toml")` → `load_config(...)`. `typer`, `Path`, `load_config` already imported at top of `cli.py`; add `from evemarket.store.schema import ensure_market_db` and `from evemarket.store.quality import run_quality_checks`.
 
 **Deliverables / decisions (do exactly this):**
-1. **Module logger:** `LOGGER = logging.getLogger(__name__)` in `scheduler.py`.
-2. **`run_prices_job(config, *, ingest=ingest_prices) -> PricesIngestResult | None`** (sync; APScheduler calls sync job fns):
-   - Body: define inner `async def _run(): async with ESIClient(config=config) as client: return await ingest(client, config)`; `result = asyncio.run(_run())`; `LOGGER.info("prices job ok run_id=%s count=%s", result.run_id, result.price_count)`; return `result`.
-   - Wrap the whole body in `try/except Exception: LOGGER.exception("prices job failed"); return None`. **Job MUST swallow exceptions** so one failure doesn't kill the scheduler. The injectable `ingest` keyword is for offline tests (defaults to the real `ingest_prices`).
-3. **`run_orders_job(config, *, ingest=ingest_orders) -> list[IngestResult]`** (sync):
-   - Inner `async def _run(): results=[]; async with ESIClient(config=config) as client: for region in config.tracked_regions: results.append(await ingest(client, config, region)); return results`. `results = asyncio.run(_run())`; `LOGGER.info("orders job ok regions=%s", [r.region_id for r in results])`; return `results`.
-   - Same `try/except Exception: LOGGER.exception("orders job failed"); return []` swallow.
-4. **`build_scheduler(config, *, scheduler=None, orders_interval_minutes=5, prices_interval_minutes=60) -> BlockingScheduler`:**
-   - `sched = scheduler or BlockingScheduler(timezone=pytz.utc)`.
-   - `sched.add_job(run_orders_job, "interval", minutes=orders_interval_minutes, args=[config], id="orders", coalesce=True, max_instances=1, replace_existing=True)`.
-   - `sched.add_job(run_prices_job, "interval", minutes=prices_interval_minutes, args=[config], id="prices", coalesce=True, max_instances=1, replace_existing=True)`.
-   - Return `sched`. (Two jobs total: `orders`, `prices`. NO history job.)
-5. **CLI `schedule`** — opts `--config/-c` (Path, default `config.toml`); `--orders-interval` (int, default 5, help "Orders snapshot interval, minutes"); `--prices-interval` (int, default 60); `--dry-run/-n` (bool flag, default False). Flow: `cfg = load_config(config)`; `sched = build_scheduler(cfg, orders_interval_minutes=orders_interval, prices_interval_minutes=prices_interval)`; print one line per `sched.get_jobs()` → `f"Job {job.id}: {job.trigger}"`. If `--dry-run` → print "Dry run: scheduler not started." and RETURN (no `.start()`). Else → `typer.echo("Starting scheduler. Ctrl+C to stop.")`; `try: sched.start()` `except (KeyboardInterrupt, SystemExit): sched.shutdown()`.
+1. **`QualityCheck`** (frozen dataclass in `quality.py`): `name: str`, `status: str` (one of `"ok"`/`"warn"`/`"fail"`), `detail: str`.
+2. **`run_quality_checks(conn, *, now=None, max_price_age_hours: float = 24.0, max_history_age_days: int = 3) -> list[QualityCheck]`** — `now = _ensure_utc(now or datetime.now(timezone.utc))` (inject `now` for deterministic stale tests). Returns the 5 checks below IN THIS ORDER. Each `_check_*` takes what it needs and returns one `QualityCheck`. Add a private `_ensure_utc(value)` helper (tz-naive→assume UTC; else `astimezone(UTC)`) mirroring the one in `writers.py`.
+3. **`_check_stale_prices(conn, now, max_price_age_hours)`** — name `"stale_prices"`. `latest = conn.execute("SELECT max(snapshot_ts) FROM market_prices").fetchone()[0]`. If `None` → `("warn","no price snapshots")`. Else `latest=_ensure_utc(latest)`; `age_h=(now-latest).total_seconds()/3600`; status `"warn"` if `age_h > max_price_age_hours` else `"ok"`; detail `f"latest={latest.isoformat()} age={age_h:.1f}h"`.
+4. **`_check_stale_history(conn, now, max_history_age_days)`** — name `"stale_history"`. `latest = SELECT max(date) FROM market_history`. If `None` → `("warn","no history rows")`. Else `age_d=(now.date()-latest).days`; status `"warn"` if `age_d > max_history_age_days` else `"ok"`; detail `f"latest={latest.isoformat()} age={age_d}d"`.
+5. **`_check_price_anomalies(conn)`** — name `"price_anomalies"`, inspect the LATEST snapshot only. `latest_ts = SELECT max(snapshot_ts) FROM market_prices`. If `None` → `("ok","no price snapshots")`. Else: `neg = SELECT count(*) FROM market_prices WHERE snapshot_ts = ? AND adjusted_price < 0`; `nul = SELECT count(*) FROM market_prices WHERE snapshot_ts = ? AND adjusted_price IS NULL` (bind `latest_ts`). status: `"fail"` if `neg>0`; elif `nul>0` `"warn"`; else `"ok"`. detail `f"negative={neg} null_adjusted={nul} (latest snapshot)"`. (Do NOT consider `average_price` — legitimately nullable.)
+6. **`_check_history_anomalies(conn)`** — name `"history_anomalies"`. `bad = SELECT count(*) FROM market_history WHERE highest < lowest OR average < 0 OR lowest < 0 OR highest < 0 OR volume < 0 OR order_count < 0`. status `"fail"` if `bad>0` else `"ok"`; detail `f"{bad} invalid rows"`. (Strict `< 0` / `highest<lowest` only — do NOT flag legit zeros, avoids false positives on real data.)
+7. **`_check_failed_runs(conn)`** — name `"failed_runs"`. `bad = SELECT count(*) FROM ingest_runs WHERE status='failed'`. If `bad==0` → `("ok","no failed runs")`. Else fetch latest: `SELECT source, error FROM ingest_runs WHERE status='failed' ORDER BY started_at DESC LIMIT 1`; status `"warn"`; detail `f"{bad} failed runs; latest {source}: {error}"`.
+8. **CLI `quality-check`** — opts `--config/-c` (default `config.toml`); `--max-price-age-hours` (float, default 24.0); `--max-history-age-days` (int, default 3). Flow: `cfg=load_config(config)`; `market_db = cfg.data_dir.expanduser()/"market.duckdb"`; `with ensure_market_db(market_db) as conn: checks = run_quality_checks(conn, max_price_age_hours=..., max_history_age_days=...)`; for each: `typer.echo(f"[{c.status.upper()}] {c.name}: {c.detail}")`. After printing, if `any(c.status=="fail" for c in checks)` → `raise typer.Exit(code=1)` (nonzero exit on FAIL is intentional for ops/monitoring; lines still print first).
 
-**History scheduling DEFERRED (do NOT add):** scheduled history needs a "which type_ids to refresh daily" universe decision that is its own design task (M5c-adjacent). Out of scope for M5b. Do not wire `ingest_history` into the scheduler.
+**DEFERRED (do NOT add in M5c):** history **gap-detection** (missing dates between min/max per region/type) and **row-count-delta vs prior run** (compare latest two `ingest_runs.order_count` per source) — both are follow-up checks; out of scope here. Do not implement.
 
-**Conventions to mirror:** jobs swallow+log exceptions (scheduler resilience); injectable `ingest` keyword for offline tests; UTC timezone on the scheduler (`pytz.utc`); no new deps (`apscheduler`/`pytz` already declared); terse; `data/`/`*.duckdb` stay untracked. Do NOT call `.start()` anywhere except the live (non-dry-run) CLI path.
+**Conventions to mirror:** READ-ONLY (SELECT only — never INSERT/UPDATE/DELETE in quality.py); tz-aware UTC handling via `_ensure_utc`; injectable `now` for deterministic stale tests; strict-`<0` anomaly predicates (no false positives on zeros); no new deps (`duckdb`/stdlib only); terse; `data/`/`*.duckdb` stay untracked.
 
-**Constraints** — no new deps; don't change §4 locked decisions; do NOT modify existing `cli.py` commands or any ingest/store module; `data/` untracked (gate `git status --short`). Blocked/missing-context → STOP, write §9.
+**Constraints** — no new deps; don't change §4 locked decisions; do NOT modify existing `cli.py` commands or any ingest/store/schema code (quality.py is the only store file edited); `data/` untracked (gate `git status --short`). Blocked/missing-context → STOP, write §9.
 
 **Verification (paste §8, terse per §2):**
-- `python -m pytest -q` pass, network-free (NEVER call `.start()`):
-  - `build_scheduler(Config())` (or a `Config` with 1 tracked region) → `get_jobs()` has exactly 2 jobs, ids `{"orders","prices"}`; `orders` job `trigger.interval == timedelta(minutes=5)`, `prices` == `timedelta(minutes=60)`; custom intervals via params reflected.
-  - `run_prices_job(config, ingest=<fake async returning a stub PricesIngestResult>)` → returns that result, fake called once. Fake `ingest` that `raise`s → returns `None` (swallowed, no propagation).
-  - `run_orders_job(config-with-2-regions, ingest=<fake async>)` → fake called once per region, returns list len 2; raising fake → returns `[]`.
-  - Existing M5a/M4/M3 tests stay green.
+- `python -m pytest -q` pass, network-free (seed a tmp `market.duckdb` via `ensure_market_db` + writers, inject `now`):
+  - **all-good** db (fresh prices snapshot at `now`, history `date=now.date()`, valid values, no failed runs) → all 5 checks `"ok"`.
+  - **stale** (prices `snapshot_ts=now-48h`, history `date=now-10d`) → `stale_prices` + `stale_history` `"warn"`.
+  - **price_anomalies**: latest snapshot with a negative `adjusted_price` → `"fail"`; a snapshot whose only issue is a NULL `adjusted_price` → `"warn"`; a legit NULL `average_price` alone → `"ok"`.
+  - **history_anomalies**: a row with `highest < lowest` → `"fail"`.
+  - **failed_runs**: one `record_ingest_run(status='failed', ...)` → `"warn"` with the source/error in detail.
+  - **empty** db → `stale_prices`/`stale_history` `"warn"` (no rows), other 3 `"ok"`.
+  - Existing M5b/M5a/M4/M3 tests stay green.
 - `python -m ruff check .` clean.
-- Live (non-network, non-hanging): `evemarket schedule --dry-run` → paste the 2 printed `Job ...: interval[...]` lines + "Dry run" line. (No real `.start()` in the handoff — it blocks. The underlying ingests are already proven live in M3/M5a.)
-- Pre-commit `git status --short`: no `data/`/`*.duckdb`/parquet staged (expect `scheduler.py`, `cli.py`, `tests/test_scheduler.py`, `AGENTS.md`, `HANDOFF.md`). Commit `feat: APScheduler recurring ingest jobs + schedule CLI (M5b)`; `git push origin main` (no force). Include `HANDOFF.md` + `AGENTS.md`.
+- Live (READ-ONLY, no network): `evemarket quality-check` against the real `market.duckdb` (already holds M5a prices + M4 history); paste the 5 printed `[STATUS] name: detail` lines + the process exit code. (A nonzero exit only if a real FAIL is present — that's the check working.)
+- Pre-commit `git status --short`: no `data/`/`*.duckdb`/parquet staged (expect `store/quality.py`, `cli.py`, `tests/test_quality.py`, `HANDOFF.md`). Commit `feat: data-quality checks + quality-check CLI (M5c)`; `git push origin main` (no force). Include `HANDOFF.md`.
 
-When done: append §8 entry (terse, **INCLUDE the commit hash**) and STOP. After M5b → M5c (data-quality checks).
+When done: append §8 entry (terse, **INCLUDE the commit hash**) and STOP. M5c completes Phase 1 — after it, Phase 2 (deterministic analytics: `fees.py` → `opportunity.py` → `station_trade.py`) begins.
+
+<!-- ===== M5b task (DONE, kept for reference) ===== -->
+### [DONE] M5b: APScheduler wiring → recurring ingest jobs
+
+`scheduler.py`: `build_scheduler(config, *, scheduler=None, orders_interval_minutes=5, prices_interval_minutes=60)` → UTC `BlockingScheduler` with 2 interval jobs (`orders`, `prices`, `coalesce/max_instances=1/replace_existing`); sync `run_orders_job`/`run_prices_job` wrappers (`asyncio.run` + `ESIClient`, injectable `ingest=`, swallow+log exceptions → `None`/`[]`). CLI `schedule --orders-interval/--prices-interval/--dry-run`. History scheduling deferred. Committed `169bde0` (also cleared the AGENTS.md closed-world workflow loose end).
 
 <!-- ===== M5a task (DONE, kept for reference) ===== -->
 ### [DONE] M5a: ESI market prices ingestion → `market_prices`
@@ -243,6 +248,10 @@ When done: append §8 entry (terse, **INCLUDE the commit hash** — M3-FIX2 omit
 
 - **M5b drafted (Context Pack).** APScheduler wiring → recurring ingest jobs. Verified prerequisites against the live tree (no exploration debt left for Codex): `apscheduler 3.11.2` installed + declared in `pyproject.toml` (3.x `BlockingScheduler` API); `ingest_orders(client,config,region_id)`→`IngestResult(.run_id/.region_id/.order_count/.status)` and `ingest_prices(client,config)`→`PricesIngestResult(.run_id/.price_count/.status)` signatures read from source; `cli.py` already imports `asyncio`/`typer`/`Path`/`load_config`/`ESIClient`; `pytz` is a dep (scheduler tz). **Scope held tight:** new `scheduler.py` (`build_scheduler` + `run_orders_job`/`run_prices_job`, jobs swallow+log exceptions for resilience, injectable `ingest=` kwarg for offline tests) + CLI `schedule` (`--orders-interval`/`--prices-interval`/`--dry-run`) + offline test. **Two jobs only (orders+prices); history scheduling explicitly DEFERRED** (needs a "which type_ids daily" universe decision — its own task). Live verification = `schedule --dry-run` (lists 2 jobs, no `.start()`, no network, no hang) since the underlying ingests are already proven live (M3/M5a); tests MUST never call `.start()` (blocks). **M5b commit also clears the AGENTS.md loose end** (pack instructs Codex to stage the already-modified workflow paragraph). Review focus on return: exactly 2 jobs w/ correct interval triggers, jobs swallow exceptions (raising fake `ingest`→None/[]), injectable-ingest offline tests (no network, no `.start()`), no new deps, existing commands/tests untouched, `data/` untracked, commit hash + AGENTS.md in §8.
 
+- **M5b REVIEW: DONE.** Read all M5b code (`scheduler.py`, `cli.py` schedule cmd, `test_scheduler.py`). Planner clean-env (bare `python`, all deps, NO manual installs): `pytest --basetemp <scratch>` → `28 passed, 1 skipped`; `ruff` clean. Commit `169bde0` (+`abd8393` docs); tree clean. All focus pts pass: `build_scheduler` registers exactly 2 jobs `{orders,prices}` w/ `IntervalTrigger` 5/60 min (custom intervals reflected — test); `run_prices_job`/`run_orders_job` swallow+log exceptions (raising fake → `None`/`[]` — tested), injectable `ingest=` keeps tests network-free, NO `.start()` in tests; UTC `BlockingScheduler(timezone=pytz.utc)`, `coalesce/max_instances=1/replace_existing`; orders loops `tracked_regions` (2-region test → 2 calls in order); existing commands/ingest/store untouched, M5a/M4/M3 green; no new deps; `data/` untracked. Planner-ran live dry-run: `schedule --dry-run` → `Job orders: interval[0:05:00]` / `Job prices: interval[1:00:00]` / `Dry run: scheduler not started.` (no `.start()`, no network, no hang). **AGENTS.md loose end CLEARED** — closed-world workflow paragraph committed in `169bde0` (2-line add). No deviations of note (Codex flagged a benign `git status` warning re: inaccessible global ignore — no behavior impact). **M0–M5b DONE.** Next: M5c (data-quality checks) — awaiting user go to draft the Context Pack.
+
+- **M5c drafted (Context Pack) — LAST of Phase 1.** Data-quality checks. Verified all contracts against live source (`schema.py` 3-table DDL, `writers.py` signatures, the `quality.py` stub): pack pastes the verbatim DDL of `ingest_runs`/`market_history`/`market_prices` so Codex writes SQL blind, + writer signatures (`write_prices`/`write_history_bulk`/`record_ingest_run`) for test seeding. **Design:** fill the `store/quality.py` stub with `QualityCheck(name,status,detail)` frozen dataclass + `run_quality_checks(conn, *, now=None, max_price_age_hours=24, max_history_age_days=3)` returning 5 READ-ONLY checks in order: `stale_prices` (newest `market_prices.snapshot_ts` age, warn>24h), `stale_history` (newest `market_history.date` age, warn>3d), `price_anomalies` (latest snapshot: `adjusted_price<0`→fail, NULL→warn; `average_price` NULL ignored — legit ~12%), `history_anomalies` (`highest<lowest`/negative→fail; strict `<0` to avoid false-positives on zeros), `failed_runs` (`ingest_runs.status='failed'` count→warn + latest source/error). CLI `quality-check --max-price-age-hours/--max-history-age-days`, prints `[STATUS] name: detail` per check, `typer.Exit(1)` on any FAIL (ops signal). **Held tight:** quality.py SELECTs only (never mutates); injectable `now` for deterministic stale tests; explicitly DEFERRED history gap-detection + row-count-delta-vs-prior-run (heavier follow-ups, noted in §6 as do-not-implement). Live check is READ-ONLY (no network) against the real db. Review focus on return: read-only (no INSERT/UPDATE in quality.py), all 5 checks correct status logic, `average_price` NULL NOT flagged, strict-`<0` predicates, injectable-`now` offline tests cover ok/warn/fail/empty, exit-1-on-fail, existing commands/tests untouched, no new deps, `data/` untracked, commit hash in §8.
+
 ## 8. Execution Log (Codex)
 
 ### M0 — Scaffold — 2026-06-26 — COMPLETE
@@ -304,6 +313,15 @@ Offline: bare `python -m pytest -q` failed (`python` not on PATH). Bundled Pytho
 Dry-run: `...\Scripts\evemarket.exe schedule --dry-run` -> `Job orders: interval[0:05:00]`; `Job prices: interval[1:00:00]`; `Dry run: scheduler not started.`
 Tests added: scheduler has ids `{"orders","prices"}` + 5/60 minute intervals; custom intervals reflected; prices fake called once and returned; prices raising fake -> `None`; orders fake called once per configured region and returned len 2; orders raising fake -> `[]`; no `.start()`.
 Pre-commit `git status --short`: `AGENTS.md`, `HANDOFF.md`, `src/evemarket/cli.py`, `src/evemarket/scheduler.py`, `tests/test_scheduler.py`; no `data/`/`*.duckdb`/parquet staged.
+Deviations: used bundled Python absolute path; `git status` warned user global ignore inaccessible (`C:\Users\M0obo/.config/git/ignore` permission denied); no behavior impact. Questions: none.
+
+### M5c - data-quality checks + quality-check CLI - 2026-06-26 - COMPLETE
+Files: `src/evemarket/store/quality.py`, `src/evemarket/cli.py`, `tests/test_quality.py`, `HANDOFF.md`. Commit: pending until commit creation.
+Implemented `QualityCheck`; `run_quality_checks` with ordered checks `stale_prices`, `stale_history`, `price_anomalies`, `history_anomalies`, `failed_runs`; UTC `_ensure_utc`; read-only SELECT checks; CLI `quality-check --max-price-age-hours/--max-history-age-days`, prints `[STATUS]`, exits 1 on fail.
+Offline: bare `python -m pytest -q` failed (`python` not on PATH). Bundled Python: `...\python.exe -m pytest -q -p no:cacheprovider --basetemp .pytest-tmp` -> `36 passed, 1 skipped in 3.21s`. `...\python.exe -m ruff check .` -> `All checks passed!`.
+Live read-only: `...\Scripts\evemarket.exe quality-check` -> `[OK] stale_prices: latest=2026-06-26T08:17:44.117069+00:00 age=0.5h`; `[OK] stale_history: latest=2026-06-24 age=2d`; `[OK] price_anomalies: negative=0 null_adjusted=0 (latest snapshot)`; `[OK] history_anomalies: 0 invalid rows`; `[OK] failed_runs: no failed runs`; `EXIT_CODE=0`.
+Tests added: all-good all 5 ok; stale prices/history warn; negative adjusted fail; null adjusted warn; null average only ok; highest<lowest fail; failed run warn with source/error; empty db warns stale only; existing M5b/M5a/M4/M3 green.
+Pre-commit `git status --short`: `HANDOFF.md`, `src/evemarket/cli.py`, `src/evemarket/store/quality.py`, `tests/test_quality.py`; no `data/`/`*.duckdb`/parquet staged.
 Deviations: used bundled Python absolute path; `git status` warned user global ignore inaccessible (`C:\Users\M0obo/.config/git/ignore` permission denied); no behavior impact. Questions: none.
 
 ## 9. Open Questions / Blockers

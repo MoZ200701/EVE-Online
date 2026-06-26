@@ -17,6 +17,8 @@ from evemarket.ingest.orders import ingest_orders
 from evemarket.ingest.prices import ingest_prices
 from evemarket.scheduler import build_scheduler
 from evemarket.sde.load import connect, download_sde, load_sde, table_counts
+from evemarket.store.quality import run_quality_checks
+from evemarket.store.schema import ensure_market_db
 
 app = typer.Typer(help="EVE Market Tool.")
 
@@ -354,3 +356,40 @@ def schedule_command(
         sched.start()
     except (KeyboardInterrupt, SystemExit):
         sched.shutdown()
+
+
+@app.command("quality-check")
+def quality_check_command(
+    config: Path = typer.Option(
+        Path("config.toml"),
+        "--config",
+        "-c",
+        help="Path to a TOML configuration file.",
+    ),
+    max_price_age_hours: float = typer.Option(
+        24.0,
+        "--max-price-age-hours",
+        help="Maximum latest price snapshot age, hours.",
+    ),
+    max_history_age_days: int = typer.Option(
+        3,
+        "--max-history-age-days",
+        help="Maximum latest history row age, days.",
+    ),
+) -> None:
+    """Run read-only market data quality checks."""
+
+    loaded_config = load_config(config)
+    market_db = loaded_config.data_dir.expanduser() / "market.duckdb"
+    with ensure_market_db(market_db) as conn:
+        checks = run_quality_checks(
+            conn,
+            max_price_age_hours=max_price_age_hours,
+            max_history_age_days=max_history_age_days,
+        )
+
+    for check in checks:
+        typer.echo(f"[{check.status.upper()}] {check.name}: {check.detail}")
+
+    if any(check.status == "fail" for check in checks):
+        raise typer.Exit(code=1)
