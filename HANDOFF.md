@@ -59,35 +59,45 @@ tests/
 ## 5. Phase plan (no jumping ahead)
 
 **Phase 1 — data pipeline**
-- M0 Scaffold ✅ | M1 SDE→`sde.duckdb` ✅ | REPO git+push ✅ | M2 ESI client ✅ | M2-COMMIT Discord contact + push ✅
-- **M3** Order-book snapshot ingestion (Forge → Parquet) + `ingest_runs` log ← **CURRENT**
-- M4 History ingestion + everef.net backfill
+- M0 Scaffold ✅ | M1 SDE→`sde.duckdb` ✅ | REPO git+push ✅ | M2 ESI client ✅ | M3 Order snapshots + `ingest_runs` ✅
+- **M4a** ESI daily history → `market_history` table ← **CURRENT** | M4b everef.net bulk backfill (next)
 - M5 Prices ingestion + scheduler + data-quality checks
 
 **Phase 2 — deterministic analytics (stubbed):** `fees.py`, `opportunity.py` (ProfitOpportunity), `station_trade.py` (first scanner), then `haul.py`.
 
 Definition of done is per-step in each task prompt.
 
-## 6. Current Task (Codex) — M3-FIX2: declare pytz dep (TIMESTAMPTZ read path)
+## 6. Current Task (Codex) — M4a: ESI daily history ingestion → `market_history`
 
-M3-FIX schema correct (4 `TIMESTAMPTZ` cols + `SET TimeZone='UTC'`), committed `c1dacf8`, tree clean. BUT M3-FIX verification was INVALID: §8 logged `13 passed` only because you manually `pip install pytz` (you noted it, never declared it). Clean-env reproduce (planner ran): `python -m pytest -q` → `1 failed, 12 passed, 1 skipped`; `InvalidInputException: Required module 'pytz' failed to import` / `ModuleNotFoundError: No module named 'pytz'` at the TIMESTAMPTZ `fetchone()` (test L143). DuckDB needs pytz to convert TIMESTAMPTZ→Python tz-aware datetime on READ. Writes fine (failed-row test inserts tz-aware + passes); only Python reads of tz cols break. Latent: M4/M5/quality/analytics all read `ingest_runs` → all crash without pytz on a fresh install.
+M3 fully DONE (signed off §7). This = M4a only: ESI daily market history → DuckDB table. everef.net bulk backfill is **M4b (NEXT, NOT now)**. Execute exactly this — no everef, no prices(M5), no scheduler, no analytics.
 
-Planner sign-off: **pytz approved as runtime dep** (DuckDB's required companion for tz types; §4 deps updated). Fix EXACTLY this — nothing else.
+Endpoint: `client.get("/latest/markets/{region_id}/history/", params={"type_id": tid})` — public, NOT paginated (one JSON array per type). Each day row: `date` (`YYYY-MM-DD`), `average`, `highest`, `lowest` (float ISK), `order_count` (int), `volume` (int). ~13 months/type.
 
-1. `pyproject.toml` — add `pytz` to runtime `dependencies` (NOT dev-only; production reads tz cols). Reinstall `pip install -e ".[dev]"`.
-2. NO code/schema/test changes. `store/schema.py` + the read-back test are already correct — do NOT touch them.
+Storage: DuckDB `market.duckdb` table `market_history` (§4: history lives in DuckDB, NOT parquet). Reuse `ensure_market_db` + existing `ingest_runs` for bookkeeping.
 
-**Constraints** — only `pyproject.toml` changes (+ lockfile if any); `data/`,`*.duckdb`,parquet stay untracked; don't change §4 beyond the already-approved pytz line. Blocked → STOP, write §9.
+**Deliverables**
+
+1. `esi/models.py` — add `MarketHistoryDay` (pydantic): `date: datetime.date, average: float, highest: float, lowest: float, order_count: int, volume: int`.
+
+2. `store/schema.py` — in `ensure_market_db` also `CREATE TABLE IF NOT EXISTS market_history`:
+   - `region_id BIGINT, type_id BIGINT, date DATE, average DOUBLE, highest DOUBLE, lowest DOUBLE, order_count BIGINT, volume BIGINT`
+   - `PRIMARY KEY (region_id, type_id, date)`. Leave `ingest_runs` unchanged.
+
+3. `store/writers.py` — `write_history(conn, region_id, type_id, days: list[dict]) -> int`: build polars DF with **explicit schema** (`date pl.Date, average/highest/lowest pl.Float64, order_count/volume pl.Int64`) + add `region_id`/`type_id` cols; parse `date` str→date. **Idempotent UPSERT** on PK via `INSERT INTO market_history ... ON CONFLICT (region_id, type_id, date) DO UPDATE SET ...` (or DELETE-by-(region,type)+INSERT in one txn). Return rows written. Register DF with DuckDB to insert (no row-by-row).
+
+4. `ingest/history.py` — `async def ingest_history(client, config, region_id, type_ids: list[int], *, now=None) -> HistoryIngestResult` (dataclass: `run_id, region_id, type_ids, day_count, types_fetched, status, esi_expires`). Flow: record `started_at`/`run_id`/`snapshot_ts=now or utcnow`; for each tid → `client.get(...)`, capture `esi_expires` from FIRST call, validate **first ≤50** day rows/type via `MarketHistoryDay` (sample, not all), `write_history(...)` accumulate `day_count`. Then open `ensure_market_db`, `record_ingest_run(status='success', source='esi_history', region_id, snapshot_ts, order_count=day_count, pages=len(type_ids), snapshot_path=NULL, esi_expires)`. On any `ESIError`/write fail → record `status='failed'` row (source='esi_history', error set, order_count=0, snapshot_path NULL) + re-raise. `now` injectable.
+
+5. CLI `evemarket ingest-history` — `--region` default first tracked region, `--type` repeatable int (default `[34]` Tritanium for polite first run), `--config`. Build `ESIClient`, `asyncio.run`, print region, types_fetched, day_count, run_id/status, esi_expires.
+
+**Constraints** — no new deps; `market.duckdb`/parquet stay untracked (gate `git status --short`); don't change §4. Blocked → STOP, write §9.
 
 **Verification (paste §8, terse per §2):**
-- Prove pytz is DECLARED, not just locally present: `pip uninstall -y pytz` → `pip install -e ".[dev]"` → `python -c "import pytz; print(pytz.__version__)"` succeeds (pulled via your declared dep). If uninstall/reinstall awkward, at minimum paste the `pyproject.toml` diff + `pip show pytz`.
-- `python -m pytest -q` → all pass with NO manual pytz install; network-free.
+- `python -m pytest -q` pass, network-free (MockTransport, tmp `data_dir`, injected `now`): 2 types × N days → `market_history` rows correct (region_id+type_id+date, right types); **re-run same data = no dupes** (idempotent, row count stable); `ingest_runs` has 1 `success` row `source='esi_history'` w/ matching `order_count`(day_count)/`pages`; failure path → `failed` row, error set; existing M3 tests stay green.
 - `python -m ruff check .` clean.
-- Pre-commit `git status --short`: only `pyproject.toml` (+ `HANDOFF.md`); no `data/`/`*.duckdb`/parquet. Commit `fix: declare pytz dependency for TIMESTAMPTZ reads (M3)`; `git push origin main` (no force).
+- One polite live run: `ingest-history --type 34` vs Forge; paste printed summary + `SELECT type_id, count(*), min(date), max(date) FROM market_history GROUP BY type_id` + the `ingest_runs` row (`source='esi_history'`).
+- Pre-commit `git status --short`: no `data/`/`*.duckdb`/parquet staged. Commit `feat: ESI daily market history ingestion → market_history (M4)`; `git push origin main` (no force). Include `HANDOFF.md`.
 
-**Deferred — NOT this task:** Config `BaseSettings`→`BaseModel` (§9).
-
-When done: append §8 entry (terse) and STOP. M4 (history + everef backfill) next — held until suite green in clean env.
+When done: append §8 entry (terse, **INCLUDE the commit hash** — M3-FIX2 omitted it) and STOP. M4b (everef.net bulk backfill) next.
 
 ## 7. Planner/Debugger Notes (Claude)
 
@@ -101,6 +111,8 @@ When done: append §8 entry (terse) and STOP. M4 (history + everef backfill) nex
 - **M3 drafted** (§6): order-book snapshot → Parquet (partitioned `region=/date=/<ts>.parquet`) + `ingest_runs` bookkeeping in new `market.duckdb`; fills stubs `ingest/orders.py`,`store/schema.py`,`store/writers.py` + CLI `ingest-orders` + offline tests; one polite live Forge run. Review focus on return: exact partition path/ts format, explicit polars schema (no inference), `issued` UTC parse, failed-run row on error, cheap sample-only `MarketOrder` validation (not all rows), and `data/` stays untracked.
 - **M3 REVIEW: REDO-lite.** Read all M3 code; `13 passed,1 skipped`; ruff clean. Code strong — explicit polars schema, partition path/ts format, `issued` UTC parse, success/fail split, sample-only `MarketOrder` validation, `data/` untracked: all correct. 1 REAL bug: `ingest_runs` ts cols stored LOCAL not UTC (tz-aware datetime → DuckDB naive `TIMESTAMP` localizes wall-clock + strips tz). Reproduced `03:45:03+00:00`→`11:45:03` (UTC+8); visible in M3 §8 log (printed esi_expires `03:45:03+00:00` vs DB row `11:45:03`). Breaks DB `snapshot_ts` ↔ parquet partition-ts tie + cross-machine reproducibility. Tests missed: DuckDB asserts skip both ts cols (parquet asserts OK b/c polars preserves tz). Fix → M3-FIX (§6): TIMESTAMPTZ + ts read-back test. Minors folded into §6: esi_expires falls back to `now()` on missing Expires header (spec=nullable, low-pri); Config still `BaseSettings` (deferred §9). M0–M2 stay DONE.
 - **M3-FIX REVIEW: REDO (hidden dep).** Schema fix correct (4 `TIMESTAMPTZ`, `SET TimeZone='UTC'`), committed `c1dacf8`, tree clean, read-back test good. But Codex verification INVALID: `13 passed` only b/c manual `pip install pytz` (noted §8, never declared in `pyproject.toml`). Planner clean-env `python -m pytest -q` → `1 failed, 12 passed, 1 skipped`: `InvalidInputException: Required module 'pytz' failed to import` at TIMESTAMPTZ `fetchone()` (L143). DuckDB needs pytz to read tz cols → Python; writes OK (failed-row insert passes). Latent crash for M4/M5/quality/analytics (all read `ingest_runs`) on fresh install. Fix → M3-FIX2 (§6): declare pytz dep (planner sign-off; §4 deps line updated). Process note for Codex: "no new deps" means STOP+flag in §9 if you need one — never silently `pip install` to make tests pass. M4 held until suite green in clean env. M0–M2 stay DONE.
+- **M3-FIX2 DONE — M3 fully COMPLETE.** `pytz` declared in `pyproject.toml` deps (L17); committed `c228ca9`, pushed (no unpushed, tree clean). Planner verified in the SAME env that failed before: fresh `pip install -e .` pulled `pytz 2026.2` (transitive via declared dep, not manual), then `python -m pytest -q` → `13 passed, 1 skipped`. Clean-env regression closed. Codex §8 omitted the commit hash (minor log gap) but commit exists + pushed. **M3 (order ingestion + UTC TIMESTAMPTZ + pytz) signed off DONE.** Next: M4 (history ingestion + everef backfill).
+- **M4 drafted (split M4a/M4b).** Milestone "history + everef" too big for one step → M4a = ESI daily history → DuckDB `market_history` (PK region+type+date, idempotent upsert, sample-only `MarketHistoryDay` validation, `ingest_runs` source='esi_history', CLI `ingest-history`, offline+1 polite live run); M4b = everef.net bulk backfill (next). History → DuckDB table NOT parquet (§4). Review focus on return: explicit polars schema, idempotent re-run (no dupes is the key test), date parse, failed-run row, history in DuckDB not parquet, `data/` untracked, AND commit hash present in §8 (chased Codex on this).
 
 ## 8. Execution Log (Codex)
 
@@ -126,6 +138,15 @@ Changed: `store/schema.py`, `store/writers.py`, `ingest/orders.py`, `cli.py`, `t
 Changed: `store/schema.py`, `tests/test_ingest_orders.py`, `HANDOFF.md`. `ingest_runs` ts cols `TIMESTAMPTZ`; `ensure_market_db` sets DuckDB `TimeZone='UTC'`; success test reads DB with UTC session and asserts `snapshot_ts`, `esi_expires`, `started_at`, `finished_at` tz-aware UTC. Deleted throwaway `data/market.duckdb` before live rebuild. Offline: bare `python` absent; installed `.[dev]` into bundled Python; installed `pytz` for DuckDB `TIMESTAMPTZ` Python fetch; first pytest blocked by AppData temp permission, reran workspace temp. `...\python.exe -m pytest -q -p no:cacheprovider --basetemp .pytest-tmp` -> `13 passed, 1 skipped in 1.49s`; `...\python.exe -m ruff check .` -> `All checks passed!`. Live: `...\Scripts\evemarket.exe ingest-orders` -> region `10000002`, status `success`, run_id `ac42358f-0534-4ce3-8739-d1d1d509d5bd`, pages `424`, order_count `423548`, snapshot `data\snapshots\orders\region=10000002\date=2026-06-26\20260626T040005Z.parquet`, esi_expires `2026-06-26 04:05:03+00:00`. UTC query (`SET TimeZone='UTC'; SELECT snapshot_ts, esi_expires FROM ingest_runs ORDER BY started_at DESC LIMIT 1`) -> `[(datetime.datetime(2026, 6, 26, 4, 0, 5, 697187, tzinfo=<UTC>), datetime.datetime(2026, 6, 26, 4, 5, 3, tzinfo=<UTC>))]`; matches partition path `20260626T040005Z`, no +8 skew. `DESCRIBE ingest_runs` confirms four `TIMESTAMP WITH TIME ZONE` cols. Pre-commit `git status --short`: only `HANDOFF.md`, `src/evemarket/store/schema.py`, `tests/test_ingest_orders.py`; `git check-ignore` confirmed `data/market.duckdb` + live parquet ignored. Deviation: missing-`Expires` NULL tweak left untouched; client API always returns fallback `expires`, avoiding refactor per low-pri note. Questions: none.
 ### M3-FIX2 — declare pytz dependency — 2026-06-26 — COMPLETE
 Changed: `pyproject.toml`, `HANDOFF.md`. Added runtime `pytz` dependency for DuckDB `TIMESTAMPTZ` read conversion; no code/schema/test changes. Verification: `...\python.exe -m pip uninstall -y pytz` -> uninstalled `pytz 2026.2`; `...\python.exe -m pip install -e ".[dev]"` -> `Collecting pytz (from evemarket==0.1.0)`, `Successfully installed evemarket-0.1.0 pytz-2026.2`; `...\python.exe -c "import pytz; print(pytz.__version__)"` -> `2026.2`. Offline: `...\python.exe -m pytest -q -p no:cacheprovider --basetemp .pytest-tmp` -> `13 passed, 1 skipped in 1.34s`; `...\python.exe -m ruff check .` -> `All checks passed!`. Pre-commit `git status --short`: only `HANDOFF.md`, `pyproject.toml`; no `data/`/`*.duckdb`/parquet staged. Deviations: used bundled Python absolute path because bare `python` unavailable; pytest used workspace basetemp due AppData temp permission issue. Questions: none.
+### M4a — ESI daily history ingestion -> market_history — 2026-06-26 — COMPLETE
+Files: `.gitignore`, `src/evemarket/esi/models.py`, `src/evemarket/store/schema.py`, `src/evemarket/store/writers.py`, `src/evemarket/ingest/history.py`, `src/evemarket/cli.py`, `tests/test_ingest_history.py`, `HANDOFF.md`. Commit: `b51e885`.
+Implemented `MarketHistoryDay`; `market_history` PK table in `ensure_market_db`; `write_history` typed Polars DF + DuckDB temp staging + set-based `ON CONFLICT` upsert; `ingest_history` success/fail `ingest_runs` source=`esi_history`; CLI `ingest-history --type`.
+Offline: bare `python -m pytest -q -p no:cacheprovider --basetemp .pytest-tmp` failed (`python` not on PATH). Bundled Python: `...\python.exe -m pytest -q -p no:cacheprovider --basetemp .pytest-tmp` -> first failed due duplicate stub header, second failed because `conn.register(polars_df)` needs missing `pyarrow`; final -> `16 passed, 1 skipped in 1.60s`. `...\python.exe -m ruff check .` -> `All checks passed!`.
+Tests added: 2 types x 2 days rows correct; rerun same data row count stable (2 rows, 2 success runs); failure path records `failed` row with error; M3 tests still green.
+Live: `...\Scripts\evemarket.exe ingest-history --type 34` -> Region `10000002`, Status `success`, Run ID `546c78f2-1f2b-48bc-9c8f-e459c62e89b7`, Types fetched `1`, Type IDs `[34]`, Day count `420`, ESI expires `2026-06-26 11:05:00+00:00`.
+DuckDB: `SELECT type_id, count(*), min(date), max(date) FROM market_history GROUP BY type_id` -> `[(34, 420, 2025-05-01, 2026-06-24)]`. Latest `ingest_runs` history row -> `('546c78f2-1f2b-48bc-9c8f-e459c62e89b7','esi_history',10000002,1,420,'success',2026-06-26 11:05:00+00:00,NULL,NULL)`.
+Pre-commit `git status --short`: `.gitignore`, source files, `tests/test_ingest_history.py`, `HANDOFF.md`; no `data/`/`*.duckdb`/parquet staged; `git check-ignore -v data\market.duckdb` -> `.gitignore:1:data/`.
+Deviations: no new deps allowed; DuckDB `register(polars_df)` required absent `pyarrow`, so writer stages explicit-schema Polars rows into temp DuckDB table then upserts set-wise. Added `.pytest-tmp/` to `.gitignore`; Windows denied deleting generated basetemp. Used bundled Python absolute path; live run required network escalation. Questions: none.
 Template: `### M<n> — <title> — <date> — COMPLETE/BLOCKED` then: Files | Commands+result | Verification | Deviations | Questions.
 
 ## 9. Open Questions / Blockers
