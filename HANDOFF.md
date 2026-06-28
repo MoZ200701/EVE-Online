@@ -379,7 +379,7 @@ _(Append new entries below — next: M9a.)_
 - Verification: PASS; cargo-bound, capital-bound, invalid skip paths, no-spread exclusion, filters, zero-volume `days_to_sell=inf`, sort+limit+tiebreak, ValueError cases, direct `station_trade_opportunity` profit parity covered.
 - Deviations: used bundled Python abs path; bare `python` known unavailable. No live run/network; pure calc tests only. Did not touch/stage unrelated `HANDOFF_ARCHIVE.md`.
 - Questions: none.
-- Commit: pending.
+- Commit: `ab937a9`.
 
 ## 9. Open Questions / Blockers
 
