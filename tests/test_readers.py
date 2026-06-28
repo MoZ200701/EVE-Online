@@ -4,14 +4,17 @@ from pathlib import Path
 import duckdb
 import pytest
 
+from evemarket.analytics.haul import scan_haul_opportunities
 from evemarket.analytics.station_trade import scan_station_trades
 from evemarket.config import Config
-from evemarket.store.readers import read_station_quotes
+from evemarket.store.readers import read_haul_quotes, read_station_quotes
 from evemarket.store.schema import ensure_market_db
 from evemarket.store.writers import record_ingest_run, write_orders_snapshot
 
 REGION_ID = 10000002
+DEST_REGION_ID = 10000043
 STATION_ID = 60003760
+DEST_STATION_ID = 60008494
 OTHER_STATION_ID = 60003761
 
 
@@ -99,29 +102,202 @@ def test_read_station_quotes_rejects_bad_volume_window(tmp_path: Path) -> None:
         read_station_quotes(Config(data_dir=tmp_path), REGION_ID, STATION_ID, volume_window_days=0)
 
 
+def test_read_haul_quotes_executable_pairs(tmp_path: Path) -> None:
+    source_snapshot = _write_snapshot(
+        tmp_path,
+        datetime(2026, 6, 28, 12, tzinfo=timezone.utc),
+        [
+            _order(1, 34, False, 100, STATION_ID),
+            _order(2, 35, False, 100, STATION_ID),
+        ],
+        region_id=REGION_ID,
+    )
+    dest_snapshot = _write_snapshot(
+        tmp_path,
+        datetime(2026, 6, 28, 12, tzinfo=timezone.utc),
+        [
+            _order(3, 34, True, 130, DEST_STATION_ID),
+            _order(4, 36, True, 200, DEST_STATION_ID),
+        ],
+        region_id=DEST_REGION_ID,
+    )
+    _write_market_db(
+        tmp_path,
+        source_snapshot,
+        dest_snapshot,
+        snapshot_regions=[REGION_ID, DEST_REGION_ID],
+    )
+    _write_history(tmp_path, DEST_REGION_ID)
+    _write_sde_db(tmp_path)
+
+    quotes = read_haul_quotes(
+        Config(data_dir=tmp_path),
+        REGION_ID,
+        STATION_ID,
+        DEST_REGION_ID,
+        DEST_STATION_ID,
+    )
+
+    assert len(quotes) == 1
+    assert quotes[0].type_id == 34
+    assert quotes[0].type_name == "Tritanium"
+    assert quotes[0].source_price == pytest.approx(100)
+    assert quotes[0].dest_price == pytest.approx(130)
+    assert quotes[0].volume_m3 == pytest.approx(0.01)
+    assert quotes[0].daily_volume == pytest.approx(1500)
+
+
+def test_read_haul_quotes_returns_empty_without_source_snapshot(tmp_path: Path) -> None:
+    dest_snapshot = _write_snapshot(
+        tmp_path,
+        datetime(2026, 6, 28, 12, tzinfo=timezone.utc),
+        [_order(1, 34, True, 130, DEST_STATION_ID)],
+        region_id=DEST_REGION_ID,
+    )
+    _write_market_db(tmp_path, dest_snapshot, snapshot_regions=[DEST_REGION_ID])
+
+    assert (
+        read_haul_quotes(
+            Config(data_dir=tmp_path),
+            REGION_ID,
+            STATION_ID,
+            DEST_REGION_ID,
+            DEST_STATION_ID,
+        )
+        == []
+    )
+
+
+def test_read_haul_quotes_returns_empty_without_dest_snapshot(tmp_path: Path) -> None:
+    source_snapshot = _write_snapshot(
+        tmp_path,
+        datetime(2026, 6, 28, 12, tzinfo=timezone.utc),
+        [_order(1, 34, False, 100, STATION_ID)],
+        region_id=REGION_ID,
+    )
+    _write_market_db(tmp_path, source_snapshot)
+
+    assert (
+        read_haul_quotes(
+            Config(data_dir=tmp_path),
+            REGION_ID,
+            STATION_ID,
+            DEST_REGION_ID,
+            DEST_STATION_ID,
+        )
+        == []
+    )
+
+
+def test_read_haul_quotes_sde_fallback(tmp_path: Path) -> None:
+    source_snapshot = _write_snapshot(
+        tmp_path,
+        datetime(2026, 6, 28, 12, tzinfo=timezone.utc),
+        [_order(1, 37, False, 100, STATION_ID)],
+        region_id=REGION_ID,
+    )
+    dest_snapshot = _write_snapshot(
+        tmp_path,
+        datetime(2026, 6, 28, 12, tzinfo=timezone.utc),
+        [_order(2, 37, True, 130, DEST_STATION_ID)],
+        region_id=DEST_REGION_ID,
+    )
+    _write_market_db(
+        tmp_path,
+        source_snapshot,
+        dest_snapshot,
+        snapshot_regions=[REGION_ID, DEST_REGION_ID],
+    )
+
+    quotes = read_haul_quotes(
+        Config(data_dir=tmp_path),
+        REGION_ID,
+        STATION_ID,
+        DEST_REGION_ID,
+        DEST_STATION_ID,
+    )
+
+    assert quotes[0].type_id == 37
+    assert quotes[0].type_name == "#37"
+    assert quotes[0].volume_m3 == pytest.approx(0.0)
+
+
+def test_read_haul_quotes_feeds_haul_scanner(tmp_path: Path) -> None:
+    source_snapshot = _write_snapshot(
+        tmp_path,
+        datetime(2026, 6, 28, 12, tzinfo=timezone.utc),
+        [_order(1, 34, False, 100, STATION_ID)],
+        region_id=REGION_ID,
+    )
+    dest_snapshot = _write_snapshot(
+        tmp_path,
+        datetime(2026, 6, 28, 12, tzinfo=timezone.utc),
+        [_order(2, 34, True, 130, DEST_STATION_ID)],
+        region_id=DEST_REGION_ID,
+    )
+    _write_market_db(
+        tmp_path,
+        source_snapshot,
+        dest_snapshot,
+        snapshot_regions=[REGION_ID, DEST_REGION_ID],
+    )
+    _write_sde_db(tmp_path)
+
+    quotes = read_haul_quotes(
+        Config(data_dir=tmp_path),
+        REGION_ID,
+        STATION_ID,
+        DEST_REGION_ID,
+        DEST_STATION_ID,
+    )
+    results = scan_haul_opportunities(quotes, Config())
+
+    assert len(results) == 1
+    assert results[0].type_id == 34
+
+
+def test_read_haul_quotes_rejects_bad_volume_window(tmp_path: Path) -> None:
+    with pytest.raises(ValueError):
+        read_haul_quotes(
+            Config(data_dir=tmp_path),
+            REGION_ID,
+            STATION_ID,
+            DEST_REGION_ID,
+            DEST_STATION_ID,
+            volume_window_days=0,
+        )
+
+
 def _write_snapshot(
     data_dir: Path,
     snapshot_ts: datetime,
     orders: list[dict[str, object]],
+    *,
+    region_id: int = REGION_ID,
 ) -> Path:
     snapshot_path, _ = write_orders_snapshot(
         orders,
-        REGION_ID,
+        region_id,
         snapshot_ts,
         data_dir / "snapshots",
     )
     return snapshot_path
 
 
-def _write_market_db(data_dir: Path, *snapshot_paths: Path) -> None:
+def _write_market_db(
+    data_dir: Path,
+    *snapshot_paths: Path,
+    snapshot_regions: list[int] | None = None,
+) -> None:
+    regions = snapshot_regions or [REGION_ID] * len(snapshot_paths)
     with ensure_market_db(data_dir / "market.duckdb") as connection:
-        for index, snapshot_path in enumerate(snapshot_paths):
+        for index, (snapshot_path, region_id) in enumerate(zip(snapshot_paths, regions, strict=True)):
             snapshot_ts = datetime(2026, 6, 27 + index, 12, tzinfo=timezone.utc)
             record_ingest_run(
                 connection,
                 run_id=f"run-{index}",
                 source="esi_orders",
-                region_id=REGION_ID,
+                region_id=region_id,
                 snapshot_ts=snapshot_ts,
                 started_at=snapshot_ts,
                 finished_at=snapshot_ts,
@@ -144,17 +320,34 @@ def _write_market_db(data_dir: Path, *snapshot_paths: Path) -> None:
         )
 
 
+def _write_history(data_dir: Path, region_id: int) -> None:
+    with ensure_market_db(data_dir / "market.duckdb") as connection:
+        connection.executemany(
+            """
+            INSERT INTO market_history (
+                region_id, type_id, date, average, highest, lowest, order_count, volume
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (region_id, 34, date(2026, 6, 27), 100.0, 130.0, 90.0, 10, 1000),
+                (region_id, 34, date(2026, 6, 28), 100.0, 130.0, 90.0, 10, 2000),
+            ],
+        )
+
+
 def _write_sde_db(data_dir: Path) -> None:
     with duckdb.connect(str(data_dir / "sde.duckdb")) as connection:
         connection.execute(
             """
             CREATE TABLE sde_types (
                 type_id BIGINT PRIMARY KEY,
-                type_name TEXT
+                type_name TEXT,
+                volume DOUBLE
             )
             """
         )
-        connection.execute("INSERT INTO sde_types VALUES (?, ?)", [34, "Tritanium"])
+        connection.execute("INSERT INTO sde_types VALUES (?, ?, ?)", [34, "Tritanium", 0.01])
 
 
 def _order(

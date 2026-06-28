@@ -7,6 +7,7 @@ from pathlib import Path
 
 import duckdb
 
+from evemarket.analytics.haul import HaulQuote
 from evemarket.analytics.station_trade import MarketQuote
 from evemarket.config import Config
 from evemarket.store.schema import (
@@ -60,6 +61,71 @@ def read_station_quotes(
             daily_volume=volumes.get(type_id, 0.0),
         )
         for type_id, best_bid, best_ask in quote_rows
+    ]
+
+
+def read_haul_quotes(
+    config: Config,
+    source_region_id: int,
+    source_station_id: int,
+    dest_region_id: int,
+    dest_station_id: int,
+    *,
+    volume_window_days: int = 30,
+) -> list[HaulQuote]:
+    """Read latest executable haul quotes for source and destination hubs."""
+    if volume_window_days < 1:
+        raise ValueError("volume_window_days must be at least 1")
+
+    data_dir = config.data_dir.expanduser()
+    market_path = data_dir / "market.duckdb"
+    sde_path = data_dir / "sde.duckdb"
+
+    with ensure_market_db(market_path) as connection:
+        source_snapshot = _latest_snapshot_path(connection, source_region_id)
+        dest_snapshot = _latest_snapshot_path(connection, dest_region_id)
+        if source_snapshot is None or dest_snapshot is None:
+            return []
+
+        source_asks = {
+            type_id: best_ask
+            for type_id, _, best_ask in _read_best_quotes(
+                connection,
+                source_snapshot,
+                source_station_id,
+            )
+            if best_ask > 0
+        }
+        dest_bids = {
+            type_id: best_bid
+            for type_id, best_bid, _ in _read_best_quotes(
+                connection,
+                dest_snapshot,
+                dest_station_id,
+            )
+            if best_bid > 0
+        }
+        type_ids = sorted(source_asks.keys() & dest_bids.keys())
+        if not type_ids:
+            return []
+
+        volumes = _read_daily_volumes(
+            connection,
+            dest_region_id,
+            volume_window_days=volume_window_days,
+        )
+        metadata = _read_type_metadata(connection, sde_path, type_ids)
+
+    return [
+        HaulQuote(
+            type_id=type_id,
+            type_name=metadata.get(type_id, (f"#{type_id}", 0.0))[0],
+            source_price=source_asks[type_id],
+            dest_price=dest_bids[type_id],
+            volume_m3=metadata.get(type_id, (f"#{type_id}", 0.0))[1],
+            daily_volume=volumes.get(type_id, 0.0),
+        )
+        for type_id in type_ids
     ]
 
 
@@ -157,6 +223,35 @@ def _read_type_names(
         connection.execute(f"DETACH {SDE_TYPES_ALIAS}")
 
     return {int(type_id): str(type_name) for type_id, type_name in rows}
+
+
+def _read_type_metadata(
+    connection: duckdb.DuckDBPyConnection,
+    sde_path: Path,
+    type_ids: list[int],
+) -> dict[int, tuple[str, float]]:
+    if not type_ids or not sde_path.exists():
+        return {}
+
+    connection.execute(
+        f"ATTACH {_duckdb_string_literal(sde_path)} AS {SDE_TYPES_ALIAS} (READ_ONLY)"
+    )
+    try:
+        rows = connection.execute(
+            f"""
+            SELECT type_id, type_name, volume
+            FROM {SDE_TYPES_ALIAS}.{SDE_TYPES_TABLE}
+            WHERE type_id IN (SELECT UNNEST(?))
+            """,
+            [type_ids],
+        ).fetchall()
+    finally:
+        connection.execute(f"DETACH {SDE_TYPES_ALIAS}")
+
+    return {
+        int(type_id): (str(type_name), float(volume))
+        for type_id, type_name, volume in rows
+    }
 
 
 def _duckdb_string_literal(path: Path) -> str:

@@ -71,7 +71,7 @@ tests/
 
 **Phase 1 — data pipeline**
 - M0 Scaffold ✅ | M1 SDE→`sde.duckdb` ✅ | REPO git+push ✅ | M2 ESI client ✅ | M3 Order snapshots + `ingest_runs` ✅ | M4a ESI daily history → `market_history` ✅ | M4b everef.net bulk backfill ✅ | M5a ESI prices → `market_prices` ✅
-- **M5** Prices ✅ | scheduler (M5b) ✅ | data-quality (M5c) ✅ | M5-FIX mypy-clean ✅ — **Phase 1 COMPLETE & to-standard.** | M6 `analytics/fees.py` ✅ `2cee47b` | M7 `analytics/opportunity.py` seam ✅ `46261d0` | M8a `station_trade.py` ranking core ✅ `29f7a9c` | M8b `store/readers.py` DuckDB reader ✅ `55d5a3e` | M8c CLI `scan` ✅ `0bf9a99`. ← **CURRENT: Phase 2 / M9 `analytics/haul.py` regional arbitrage — decomposed M9a pure core (ACTIVE, §6) → M9b cross-region reader → M9c CLI `haul`.**
+- **M5** Prices ✅ | scheduler (M5b) ✅ | data-quality (M5c) ✅ | M5-FIX mypy-clean ✅ — **Phase 1 COMPLETE & to-standard.** | M6 `analytics/fees.py` ✅ `2cee47b` | M7 `analytics/opportunity.py` seam ✅ `46261d0` | M8a `station_trade.py` ranking core ✅ `29f7a9c` | M8b `store/readers.py` DuckDB reader ✅ `55d5a3e` | M8c CLI `scan` ✅ `0bf9a99`. ← **CURRENT: Phase 2 / M9 `analytics/haul.py` regional arbitrage — M9a pure core ✅ `ab937a9` → M9b cross-region reader (ACTIVE, §6) → M9c CLI `haul`.**
 
 **Phase 2 — deterministic analytics (stubbed):** `fees.py` ✅, `opportunity.py` ✅, `station_trade.py` (first scanner — **decomposed: M8a pure ranking ✅ → M8b DuckDB reader ✅ → M8c CLI ✅**), then `haul.py` (**decomposed: M9a pure core → M9b cross-region reader → M9c CLI `haul`**).
 
@@ -92,103 +92,78 @@ Goal: predict forward price/return over a **multi-week horizon** (target ~2–6 
 
 Definition of done is per-step in each task prompt.
 
-## 6. Current Task (Codex) — ✅ M9a ACTIVE
+## 6. Current Task (Codex) — ✅ M9b ACTIVE
 
-**STATUS: M9a ACTIVE — pure regional-arbitrage (haul) ranking core. M8c COMPLETE (`0bf9a99`), reviewed DONE (§7). Execute the M9a Context Pack directly below. The collapsed M8c pack further down is finished reference only — do NOT execute it.**
+**STATUS: M9b ACTIVE — cross-region DuckDB haul reader. M9a COMPLETE (`ab937a9`), reviewed DONE (§7). Execute the M9b Context Pack directly below. The collapsed M8c pack further down is finished reference only — do NOT execute it.**
 
 ---
 
-### M9a — pure regional-arbitrage (haul) ranking core
+### M9b — cross-region DuckDB haul reader
 
-First haul scanner, decomposed like M8 (**M9a pure core → M9b cross-region reader → M9c CLI `haul`**). M9a **defines its own input row shape (`HaulQuote`)** so it has **zero store-schema dependency** (same reason M8a could be packed precisely): buy at a source hub → haul → sell at a destination hub. New value over M8a: **quantity sizing under cargo + capital constraints** + per-m³ / per-trip ranking. **Reuse M6/M7 for ALL per-unit economics — NO duplicated fee/profit math.**
+Second haul slice. ADD a reader that returns `list[HaulQuote]` (the M9a input shape) for a **source hub → destination hub** pair: buy at source-station best ASK, sell at dest-station best BID. Mirrors M8b's `read_station_quotes` (same module, same patterns) but reads **two** snapshots (source region + dest region) and joins to **executable pairs only** (an item must be buyable at source AND sellable at dest). **Reuse M8b's existing helpers** (`_latest_snapshot_path`, `_read_best_quotes`, `_read_daily_volumes`, `_duckdb_string_literal`) — the only genuinely new query is the SDE `type_name + volume` lookup. NO analytics logic; NO new fee math.
 
-**New-workflow note:** read the **To gather** files for exact signatures; write only the files in scope. Anything that changes this design → STOP + §9.
+**New-workflow note:** read the **To gather** files for exact signatures + the existing reader patterns to mirror; write only the files in scope. Anything that changes this design → STOP + §9.
 
 ### CONTEXT PACK
 
 **Files in scope (write only these):**
-- CREATE `src/evemarket/analytics/haul.py` (replace the stub).
-- CREATE `tests/test_haul.py`.
+- EDIT `src/evemarket/store/readers.py` — ADD `read_haul_quotes(...)` (public) + ONE new private helper `_read_type_metadata(...)` (name **and** volume). Import `HaulQuote` from `evemarket.analytics.haul`. **Do NOT alter** `read_station_quotes`, `_read_best_quotes`, `_read_daily_volumes`, `_latest_snapshot_path`, `_read_type_names`, or `_duckdb_string_literal`.
+- EDIT `tests/test_readers.py` — ADD haul-reader tests; **reuse the existing fixture helpers** in that file (snapshot writer, `ensure_market_db`/`record_ingest_run`, `market_history` rows, the tmp `sde.duckdb` builder). Extend the SDE fixture so `sde_types` includes a `volume` column.
 - EDIT `HANDOFF.md` §8 (log).
-- Do NOT touch `opportunity.py`, `fees.py`, `station_trade.py`, `config.py`, `readers.py`, or anything else.
+- Do NOT touch `analytics/haul.py`, `station_trade.py`, `config.py`, `store/schema.py`, `store/writers.py`, or anything else.
 
 **To gather (read yourself — do not edit):**
-- `src/evemarket/analytics/haul.py` — current stub (replace it).
-- `src/evemarket/analytics/opportunity.py` — `station_trade_opportunity` + `ProfitOpportunity.cost/profit/roi` (confirm vs pasted contracts).
-- `src/evemarket/analytics/station_trade.py` — mirror its STRUCTURE exactly (frozen dataclasses, `Iterable[...]` input, keyword-only filters, deterministic sort, `ValueError` guards, `from __future__ import annotations`).
-- `src/evemarket/config.py` — confirm `Config.cargo_m3` (float, default `5000.0`), `Config.capital_isk` (int, default `1_000_000_000`), `Config.skills` / `standings_factional` / `standings_corp` (defaults all 0 → zero-skill fees).
+- `src/evemarket/store/readers.py` — mirror EXACTLY: `read_station_quotes` flow (`data_dir/market.duckdb` + `data_dir/sde.duckdb`, `with ensure_market_db(market_path) as connection:`, `volume_window_days<1` → `ValueError`), and the helpers you'll reuse: `_latest_snapshot_path(connection, region_id) -> Path | None`, `_read_best_quotes(connection, snapshot_path, station_id) -> list[(type_id, best_bid, best_ask)]` (COALESCE one-sided→0.0), `_read_daily_volumes(connection, region_id, *, volume_window_days) -> dict[int,float]`, `_read_type_names`/`_duckdb_string_literal` (copy the ATTACH/DETACH `(READ_ONLY)` + escaped-literal pattern for the new metadata helper).
+- `src/evemarket/analytics/haul.py` — `HaulQuote` field order/types (the return shape).
+- `tests/test_readers.py` — reuse its fixtures; see how it builds the tmp `sde.duckdb` (`sde_types`) so you can add the `volume` column.
 
 **Caller contracts (paste — trust these):**
-- `station_trade_opportunity(config: Config, buy_price: float, sell_price: float, quantity: int) -> ProfitOpportunity` — builds `MarketBuy(buy)`+`MarketSell(sell)` from config skills/standings; broker fee on buy leg, broker fee + sales tax on sell leg. `quantity` must be int ≥ 1 (raises `ValueError` otherwise).
-- `ProfitOpportunity.cost: float` (all-in acquisition cost), `.profit: float` (net after all fees), `.roi: float` (profit/cost, `0.0` if cost ≤ 0). Per-unit cost/profit are **linear** in quantity (M6 models no per-order minimum), so qty=1 economics scale exactly.
+- `HaulQuote(type_id:int, type_name:str, source_price:float, dest_price:float, volume_m3:float, daily_volume:float)` — frozen; `source_price`=source-station best ask, `dest_price`=dest-station best bid.
+- SDE table `sde_types(type_id, type_name, group_id, market_group_id, volume, published)` at `config.data_dir/sde.duckdb` (per `sde/load.py`). Need `type_name` + `volume` (DOUBLE m³).
 
-**Deliverable — two frozen dataclasses + one function (mirror `station_trade.py`):**
+**Deliverable — `read_haul_quotes`:**
 
 ```python
-@dataclass(frozen=True)
-class HaulQuote:
-    type_id: int
-    type_name: str
-    source_price: float   # best ASK at source hub (you buy here)
-    dest_price: float     # best BID at destination hub (you sell here)
-    volume_m3: float      # per-unit packaged volume
-    daily_volume: float   # trailing avg daily traded volume at destination
-
-@dataclass(frozen=True)
-class HaulResult:
-    type_id: int
-    type_name: str
-    source_price: float
-    dest_price: float
-    quantity: int
-    total_volume_m3: float
-    unit_profit: float
-    total_profit: float
-    roi: float
-    profit_per_m3: float
-    daily_volume: float
-    days_to_sell: float
+def read_haul_quotes(
+    config: Config,
+    source_region_id: int,
+    source_station_id: int,
+    dest_region_id: int,
+    dest_station_id: int,
+    *,
+    volume_window_days: int = 30,
+) -> list[HaulQuote]:
 ```
 
-`scan_haul_opportunities(quotes: Iterable[HaulQuote], config: Config, *, min_roi: float = 0.0, min_total_profit: float = 0.0, min_daily_volume: float = 0.0, max_days_to_sell: float | None = None, limit: int | None = None) -> list[HaulResult]`:
+- `volume_window_days < 1` → `ValueError` (mirror `read_station_quotes`).
+- Open `ensure_market_db(market_path)` once (single connection for everything, like M8b).
+- `source_snapshot = _latest_snapshot_path(connection, source_region_id)`; `dest_snapshot = _latest_snapshot_path(connection, dest_region_id)`. If **either** is None → `return []`.
+- Source asks: `_read_best_quotes(connection, source_snapshot, source_station_id)` → keep `{type_id: best_ask}` where `best_ask > 0`.
+- Dest bids: `_read_best_quotes(connection, dest_snapshot, dest_station_id)` → keep `{type_id: best_bid}` where `best_bid > 0`.
+- **Executable pairs = inner join** on `type_id` (present in BOTH maps). If empty → `return []`.
+- `volumes = _read_daily_volumes(connection, dest_region_id, volume_window_days=volume_window_days)` (liquidity that matters is **destination** demand).
+- `meta = _read_type_metadata(connection, sde_path, type_ids)` → `dict[int, tuple[str, float]]` (name, volume).
+- Build one `HaulQuote` per paired `type_id`, **sorted by `type_id`**:
+  - `type_name = meta.get(tid, (f"#{tid}", 0.0))[0]`; `volume_m3 = meta.get(tid, (f"#{tid}", 0.0))[1]`.
+  - `source_price = source_ask`; `dest_price = dest_bid`; `daily_volume = volumes.get(tid, 0.0)`.
+- New helper `_read_type_metadata(connection, sde_path, type_ids) -> dict[int, tuple[str, float]]`: copy `_read_type_names`' structure (early-return `{}` if no ids or `not sde_path.exists()`; `ATTACH … (READ_ONLY)` via `_duckdb_string_literal`; `SELECT type_id, type_name, volume … WHERE type_id IN (SELECT UNNEST(?))`; `DETACH` in `finally`); return `{int(tid): (str(name), float(volume)) for …}`.
 
-- **Validation (raise `ValueError`):** `min_roi < 0`; `min_total_profit < 0`; `min_daily_volume < 0`; `max_days_to_sell is not None and max_days_to_sell <= 0`; `limit is not None and limit < 1`.
-- **Per quote:**
-  1. Skip if `source_price <= 0 or dest_price <= 0 or volume_m3 <= 0`.
-  2. `units_by_cargo = floor(config.cargo_m3 / volume_m3)`.
-  3. `per_unit_cost = station_trade_opportunity(config, source_price, dest_price, 1).cost`; `units_by_capital = floor(config.capital_isk / per_unit_cost)` if `per_unit_cost > 0` else `0`.
-  4. `quantity = min(units_by_cargo, units_by_capital)`; **skip if `quantity < 1`**.
-  5. `opp = station_trade_opportunity(config, source_price, dest_price, quantity)`; `total_profit = opp.profit`; `roi = opp.roi`; `unit_profit = total_profit / quantity`.
-  6. `total_volume_m3 = quantity * volume_m3`; `profit_per_m3 = total_profit / total_volume_m3`.
-  7. `days_to_sell = quantity / daily_volume if daily_volume > 0 else float("inf")`.
-  8. **Filter out (inclusive, mirror M8a — skip if ANY):** `roi < min_roi`; `total_profit < min_total_profit`; `daily_volume < min_daily_volume`; `max_days_to_sell is not None and days_to_sell > max_days_to_sell`.
-  9. Append `HaulResult`.
-- **Sort:** `key=lambda r: (-r.total_profit, -r.roi, r.type_id)`. Apply `limit` if not None: `results[:limit]`.
-- Use `from math import floor`. Full type hints; terse; NO new deps; NO I/O / DB / CLI.
+**Conventions to mirror:** explicit param-binding for all query VALUES (`?`); the SDE path stays a built string literal in `ATTACH` (DuckDB rejects `?` there — the M8b-accepted deviation, do the same); single connection in a `with ensure_market_db(...)`; `int()/float()/str()` casts on row values; **no new deps**; full type hints; `from __future__ import annotations` already present. **Fallbacks (honest, mirror M8b):** type missing from SDE (or SDE file absent) → `type_name=f"#{tid}"`, `volume_m3=0.0` (a 0-volume quote is returned as-is; the M9a scanner then skips it — reader's job is to report, not filter).
 
-**Planner rationale (DON'T re-decide — mirror it):**
-- Prices are **guaranteed-executable** (source ask / dest bid) and fees use the full station-trade set (broker BOTH legs + sales tax) → reported profit is a **conservative floor**, never overstated. Immediate-fill (lower-fee) variant deferred.
-- Liquidity is **surfaced, not baked in:** `daily_volume` + `days_to_sell` (= load ÷ daily turnover) + optional `min_daily_volume`/`max_days_to_sell` filters — NOT folded into headline profit as a capture-rate guess (consistent with M8a's deferral per §3 honesty).
-- Capital cap is **exact** because fee cost is linear in quantity (no per-order minimum, M6).
+**Boundary** — gather only the named files; write only the 3 in scope; reuse the existing helpers (don't rewrite the order-book/volume SQL). No analytics, no CLI, no schema changes. Anything that changes the plan → STOP + §9.
 
-**Conventions:** mirror `station_trade.py` exactly. Reuse `station_trade_opportunity` — do NOT re-derive fee/profit math. `from __future__ import annotations`; full type hints; no new deps.
+**Verification (paste §8, terse per §2) — tests are HERMETIC (tmp fixtures + DuckDB/parquet/SDE, NO network/live data):**
+- Reuse `test_readers.py` fixtures. Build **two** order snapshots under `tmp_path` data_dir: a SOURCE region (e.g. `10000002`, source station) and a DEST region (e.g. `10000043`, dest station); record each via `record_ingest_run` (`source='esi_orders'`, `status='success'`, `snapshot_path` set). Add `market_history` rows for the DEST region. Build a tmp `sde.duckdb` `sde_types` with `(type_id, type_name, volume)`.
+- **Happy path / executable-pair join:** source has type 34 SELL@100 (ask) + type 35 SELL@100; dest has type 34 BUY@130 (bid) + type 36 BUY@200. → result is **exactly one** `HaulQuote` for type 34: `source_price==100`, `dest_price==130`, `volume_m3==<sde vol>`, `daily_volume==<dest history avg>`, `type_name=='Tritanium'`. Type 35 (source-only) and 36 (dest-only) excluded.
+- **No source snapshot** (only dest recorded) → `[]`. **No dest snapshot** (only source recorded) → `[]`.
+- **SDE fallback:** a paired type absent from `sde_types` (or point `data_dir` at a dir w/o `sde.duckdb`) → that quote has `type_name==f"#{tid}"` and `volume_m3==0.0`.
+- **Feeds the scanner (integration sanity):** pass the happy-path result to `scan_haul_opportunities(quotes, Config())` → at least one `HaulResult` (use a non-trivial `volume_m3` so quantity ≥ 1).
+- **`volume_window_days < 1` → `ValueError`.**
+- `python -m pytest -q` (bundled-Python abs path `C:\Users\M0obo\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe`; if AppData temp denied → `--basetemp .pytest-tmp` at a fresh dir) — prior **79 passed, 1 skipped** stays green + new pass.
+- `python -m ruff check .` → clean. `python -m mypy src/` → **clean** (still **24** source files — only `readers.py` edited, no new module).
+- Pre-commit `git status --short`: only `src/evemarket/store/readers.py`, `tests/test_readers.py`, `HANDOFF.md` (untracked `HANDOFF_ARCHIVE.md` is unrelated — do NOT stage). No `data/` / duckdb / parquet. Commit `feat: cross-region haul reader -> store/readers.py (M9b)`; `git push origin main` (no force).
 
-**Boundary** — gather only the named files; write only the 3 in scope. Don't re-plan or expand scope (no reader, no CLI, no new fee model). Anything that changes the plan → STOP + §9.
-
-**Verification (paste §8, terse per §2) — tests are PURE (no network/DB/files; construct `HaulQuote`s + `Config()` directly):**
-- **Cargo-bound:** bulky cheap item (`volume_m3=100`, source `100`/dest `130`, big `daily_volume`) with default `Config()` → `quantity == floor(5000/100) == 50`; `total_profit > 0`; `profit_per_m3 == total_profit/(50*100)`; assert cargo (not capital) is the binding cap.
-- **Capital-bound:** use `Config(capital_isk=<small>)` so `floor(capital/per_unit_cost) < floor(cargo/volume)` → `quantity == units_by_capital`; exercises the `per_unit_cost` path.
-- **Skips:** `source_price=0`, `dest_price=0`, `volume_m3=0`, and a quote whose `quantity` computes to `0` (e.g. `volume_m3 > cargo_m3`) are all excluded.
-- **No-spread:** `dest_price <= source_price` → `roi < 0` → excluded at default `min_roi=0.0`.
-- **Filters:** `min_roi` / `min_total_profit` / `min_daily_volume` / `max_days_to_sell` each exclude as expected; `days_to_sell == inf` when `daily_volume == 0` and is excluded by any finite `max_days_to_sell`.
-- **Sort + limit:** higher `total_profit` ranks first; tie → `roi` → `type_id`; `limit=1` returns one row.
-- **`ValueError`:** negative thresholds, `max_days_to_sell=0`, `limit=0`.
-- **No duplicated math:** hand-verify one full case's `total_profit` against a direct `station_trade_opportunity(config, source, dest, quantity).profit` call.
-- `python -m pytest -q` (bundled-Python abs path `C:\Users\M0obo\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe`; if AppData temp denied → `--basetemp .pytest-tmp` at a fresh dir) — prior **66 passed, 1 skipped** stays green + new pass.
-- `python -m ruff check .` → clean. `python -m mypy src/` → **clean** (still **24** source files — `haul.py` stub already counted; no new module file).
-- Pre-commit `git status --short`: only `src/evemarket/analytics/haul.py`, `tests/test_haul.py`, `HANDOFF.md` (untracked `HANDOFF_ARCHIVE.md` is unrelated — do NOT stage). No `data/` / duckdb / parquet. Commit `feat: pure haul ranking core (M9a)`; `git push origin main` (no force).
-
-When done: append §8 entry (terse, **INCLUDE the commit hash + what you gathered**) and STOP. After M9a → **M9b** cross-region haul reader (`store/readers.py`: source-station asks + dest-station bids + SDE `volume` m³ + dest daily volume → `list[HaulQuote]`), then **M9c** CLI `haul` command.
+When done: append §8 entry (terse, **INCLUDE the commit hash + what you gathered/reused**) and STOP. After M9b → **M9c** CLI `haul` command (wires `read_haul_quotes` → `scan_haul_opportunities` → formatted table; mirrors M8c `scan`).
 
 ---
 
@@ -276,6 +251,7 @@ When done: append §8 entry (terse, **INCLUDE the commit hash + what you gathere
 - **Deferred (non-blocking, M0):** switch `Config`/`SkillConfig` `BaseSettings`→`BaseModel` so TOML is sole config source (BaseSettings allows silent env-var overrides). Small future task. (Also tracked §9.)
 
 **Recent verdicts:**
+- **M9a REVIEW: DONE.** `analytics/haul.py` + `tests/test_haul.py` match the pack. Reviewer re-ran locally → **79 passed, 1 skipped**, ruff clean, mypy clean (24 files). Verified: `HaulQuote`/`HaulResult` frozen w/ exact fields; `quantity = min(floor(cargo/vol), floor(capital/per_unit_cost))` with `per_unit_cost` from a qty=1 `station_trade_opportunity().cost` (exact b/c fee is linear, no per-order min); all skip paths (src/dest/vol≤0, `quantity<1` incl the too-bulky `vol>cargo` case); ONE opp call at full qty for profit/roi (**no duplicated math** — the parity test confirms `result.total_profit == station_trade_opportunity(...).profit`); `days_to_sell=inf` at zero volume; inclusive threshold filters incl `max_days_to_sell`; deterministic sort `(-total_profit,-roi,type_id)` verified by the `[34,35,36,37]` case (34 wins on 300>200; among the 200-tie 35 leads on ROI from qty=5/unit40 → cost 515, then 36<37 by type_id); `ValueError` on all 5 bad inputs. The test's `_dest_price_for_unit_profit` correctly inverts the zero-skill fee math (`dest*0.895 − src*1.03`). Codex's lone deviation: it fixed its OWN sort-test fixture (first run expected roi-before-total-profit) to match the spec's total-profit-primary order — correct direction (test→spec), logged §8. Git `ab937a9` + docs `01cad84`; scoped files only, no `data/`. Pure core to-standard → unblocks M9b.
 - **M9 decomposed; M9a drafted (Context Pack).** Haul (regional arbitrage) split **M9a pure core → M9b cross-region reader → M9c CLI `haul`** (mirrors M8). M9a is self-contained: *we define the input shape* (`HaulQuote`: type_id/type_name/source_price=src ask/dest_price=dst bid/volume_m3/daily_volume), so **zero store-schema dependency** (DB internals gathered at M9b). Design: `HaulQuote`+`HaulResult` frozen + `scan_haul_opportunities(quotes, config, *, min_roi, min_total_profit, min_daily_volume, max_days_to_sell, limit)`. New value over M8a = **quantity sizing under cargo + capital constraints**: `quantity = min(floor(cargo_m3/volume_m3), floor(capital_isk/per_unit_cost))`, skip if `<1`; then ONE `station_trade_opportunity(...,quantity)` call gives profit/roi (reuses M6/M7 — **no duplicated math**). Per-unit cost from a qty=1 opp; capital cap is **exact** (fee linear, no per-order min). **Honesty decisions encoded (per §3):** (a) prices are guaranteed-executable (src ask/dst bid) + full station-trade fees both legs → profit is a *conservative floor*, immediate-fill lower-fee variant deferred; (b) liquidity *surfaced not baked* — `daily_volume`+`days_to_sell`(=load/turnover)+optional `min_daily_volume`/`max_days_to_sell` filters, NOT a capture-rate guess in headline profit (same stance as M8a). Sort `(-total_profit,-roi,type_id)`. Review focus on return: cargo-bound vs capital-bound quantity, the five skip paths, no-spread exclusion, each filter, `days_to_sell==inf` at zero volume, sort+limit+tiebreak, `ValueError` on bad thresholds/`limit=0`/`max_days_to_sell=0`, profit cross-checked against a direct `station_trade_opportunity` call (no duplicated math), pure (no I/O), no new deps, mypy(24 files)/ruff clean, only 2 files+HANDOFF touched, commit hash §8.
 - **M8c REVIEW: DONE — M8 station-trade scanner COMPLETE end-to-end.** `cli.py` `scan` command + `tests/test_cli_scan.py` match the pack. Reviewer re-ran locally → **66 passed, 1 skipped**, ruff clean, mypy clean (24 files). Command is pure wiring: `load_config` → resolve `region or tracked_regions[0]` / `station ?? home_hub_station_id` → `read_station_quotes(...,volume_window_days=)` → `scan_station_trades(...,min_roi/min_unit_profit/min_daily_volume/limit)` → `_format_scan_table`; no analytics/I/O logic added. Imports correct (`StationTradeResult,scan_station_trades` from station_trade; `read_station_quotes` from store.readers). Options mirror existing style (`--config`/`-c`, `--limit`/`--volume-window-days` `min=1`); empty-quotes → "No market snapshot…" and empty-results → "No station-trade opportunities…" both exit 0. Table: aligned f-string widths, numerics right-aligned w/ `,.2f`, roi as `roi*100`. Tests hermetic (tmp `CliRunner` + DuckDB/parquet/SDE fixtures, no network). The `--limit 1` test is strong — verifies ordering (type 36's 30-spread outranks 34's 20-spread), the limit cut, AND the `#36` name-fallback together; happy-path confirms two-sided 34 shown / sell-only 35 skipped. Git `0bf9a99` + docs `2812307`; scoped files only, no `data/`. **First scanner is live data → ranked trades end-to-end.** Next: M9 `haul.py` (needs scoping/decomposition).
 - **M8b REVIEW: DONE.** `store/readers.py` + `tests/test_readers.py` match the pack. Reviewer re-ran the suite locally → **62 passed, 1 skipped**, ruff clean, mypy clean (24 files). `read_station_quotes` is the single impure layer (station_trade.py untouched/pure). Verified each step: latest-snapshot resolved via `ingest_runs` (`source='esi_orders' AND status='success' AND snapshot_path IS NOT NULL ORDER BY snapshot_ts DESC LIMIT 1`); best bid/ask = `MAX(price)FILTER(is_buy_order)`/`MIN(price)FILTER(NOT is_buy_order)` at `location_id` with `COALESCE(...,0.0)` so one-sided→0 (scanner skips); trailing avg volume window-start = `MAX(date) − (window−1)` days, missing→0.0; SDE name left-join with `f"#{type_id}"` fallback when sde db / row absent; returned sorted by `type_id` via `ORDER BY type_id` in the quotes query. All query **values** parameterized (`?`). **Deviation accepted:** DuckDB's grammar genuinely rejects a `?` placeholder in `ATTACH`/`DETACH`, so the SDE path uses a built string literal via `_duckdb_string_literal` (single-quote doubling); path is from trusted `config.data_dir` and the escaping preserves the no-injection intent → behavior/security unchanged, no design change, correctly logged §8. SDE table gathered correctly (`sde_types(type_id,type_name)` per `sde/load.py`). Git `55d5a3e` + docs `8fbe063`/`f9e9571`; scoped files only, no `data/`. Reader to-standard → unblocks M8c.
@@ -293,7 +269,7 @@ When done: append §8 entry (terse, **INCLUDE the commit hash + what you gathere
 > Full per-task logs M0–M5-FIX archived in `HANDOFF_ARCHIVE.md` §C.
 > Template: `### M<n> — <title> — <date> — COMPLETE/BLOCKED` then: Files | Commands+result | Verification | Deviations | Questions.
 
-_(Append new entries below — next: M9a.)_
+_(Append new entries below — next: M9b.)_
 
 ### M6 — deterministic broker fee + sales tax — 2026-06-28 — COMPLETE
 - Files: `src/evemarket/analytics/fees.py`, `tests/test_fees.py`, `HANDOFF.md`.
@@ -380,6 +356,19 @@ _(Append new entries below — next: M9a.)_
 - Deviations: used bundled Python abs path; bare `python` known unavailable. No live run/network; pure calc tests only. Did not touch/stage unrelated `HANDOFF_ARCHIVE.md`.
 - Questions: none.
 - Commit: `ab937a9`.
+
+### M9b — cross-region DuckDB haul reader — 2026-06-29 — COMPLETE
+- Files: `src/evemarket/store/readers.py`, `tests/test_readers.py`, `HANDOFF.md`.
+- Gathered/read: `src/evemarket/store/readers.py` (`read_station_quotes`, `_latest_snapshot_path`, `_read_best_quotes`, `_read_daily_volumes`, `_read_type_names`, `_duckdb_string_literal`); `src/evemarket/analytics/haul.py` (`HaulQuote`, scanner integration); `tests/test_readers.py` fixtures/helpers.
+- Commands+result:
+  - `C:\Users\M0obo\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe -m pytest -q --basetemp .pytest-tmp` → `85 passed, 1 skipped, 1 warning` (pytest cache WinError 5 only).
+  - `C:\Users\M0obo\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe -m ruff check .` → `All checks passed!`
+  - `C:\Users\M0obo\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe -m mypy src/` → `Success: no issues found in 24 source files`
+  - `git status --short` → scoped files + unrelated untracked `HANDOFF_ARCHIVE.md`; no `data/`/duckdb/parquet.
+- Verification: PASS; executable-pair join, missing source/dest snapshots, SDE fallback name+0.0 volume, scanner feed, `volume_window_days<1` covered.
+- Deviations: used bundled Python abs path; bare `python` known unavailable. No live run/network; hermetic tmp DuckDB/parquet/SDE fixtures only. Did not touch/stage unrelated `HANDOFF_ARCHIVE.md`.
+- Questions: none.
+- Commit: pending.
 
 ## 9. Open Questions / Blockers
 
