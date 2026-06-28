@@ -368,7 +368,7 @@ _(Append new entries below — next: M9b.)_
 - Verification: PASS; executable-pair join, missing source/dest snapshots, SDE fallback name+0.0 volume, scanner feed, `volume_window_days<1` covered.
 - Deviations: used bundled Python abs path; bare `python` known unavailable. No live run/network; hermetic tmp DuckDB/parquet/SDE fixtures only. Did not touch/stage unrelated `HANDOFF_ARCHIVE.md`.
 - Questions: none.
-- Commit: pending.
+- Commit: `81148ea`.
 
 ## 9. Open Questions / Blockers
 
