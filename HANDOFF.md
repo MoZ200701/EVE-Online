@@ -241,7 +241,7 @@ _(Append new entries below — next: M8a.)_
 - Verification: PASS; latest snapshot, station filter, one-sided NULL→0, trailing avg volume, SDE name lookup + fallback, no snapshot, scanner feed, bad volume window covered.
 - Deviations: DuckDB `ATTACH` does not accept query params; used escaped DuckDB string literal for SDE path only, normal query values remain parameterized. No live run; hermetic tmp fixtures only. `AGENTS.md` committed separately per user request.
 - Questions: none.
-- Commit: pending.
+- Commit: `55d5a3e`.
 
 ## 9. Open Questions / Blockers
 
