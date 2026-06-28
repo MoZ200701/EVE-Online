@@ -71,82 +71,69 @@ tests/
 
 **Phase 1 — data pipeline**
 - M0 Scaffold ✅ | M1 SDE→`sde.duckdb` ✅ | REPO git+push ✅ | M2 ESI client ✅ | M3 Order snapshots + `ingest_runs` ✅ | M4a ESI daily history → `market_history` ✅ | M4b everef.net bulk backfill ✅ | M5a ESI prices → `market_prices` ✅
-- **M5** Prices ✅ | scheduler (M5b) ✅ | data-quality (M5c) ✅ | M5-FIX mypy-clean ✅ — **Phase 1 COMPLETE & to-standard.** | M6 `analytics/fees.py` ✅ `2cee47b`. ← **CURRENT: Phase 2 / M7 — `analytics/opportunity.py` (`ProfitOpportunity` / `Acquisition` / `Disposal` seam) drafted (§6).**
+- **M5** Prices ✅ | scheduler (M5b) ✅ | data-quality (M5c) ✅ | M5-FIX mypy-clean ✅ — **Phase 1 COMPLETE & to-standard.** | M6 `analytics/fees.py` ✅ `2cee47b` | M7 `analytics/opportunity.py` seam ✅ `46261d0`. ← **CURRENT: Phase 2 / M8a — `analytics/station_trade.py` pure ranking core (§6).**
 
-**Phase 2 — deterministic analytics (stubbed):** `fees.py`, `opportunity.py` (ProfitOpportunity), `station_trade.py` (first scanner), then `haul.py`.
+**Phase 2 — deterministic analytics (stubbed):** `fees.py` ✅, `opportunity.py` ✅, `station_trade.py` (first scanner — **decomposed: M8a pure ranking → M8b DuckDB reader → M8c CLI**), then `haul.py`.
 
 Definition of done is per-step in each task prompt.
 
-## 6. Current Task (Codex) — M7: `analytics/opportunity.py` — `ProfitOpportunity` seam
+## 6. Current Task (Codex) — M8a: `analytics/station_trade.py` — pure ranking core
 
-M6 DONE (§7). Now build the **generic trade seam** from §4: every trade = a `ProfitOpportunity` pairing a pluggable `Acquisition` (now `MarketBuy`; future `Manufacture`) with a `Disposal` (now `MarketSell`). **Pure/deterministic**: NO network, DB, file I/O, or CLI. Reuse the M6 fee primitives — do NOT re-derive fee formulas. This is the layer `station_trade.py`/`haul.py` will consume next.
+M7 DONE (§7). Begin the first scanner. **M8 is decomposed**: this task (M8a) is the **pure ranking core only** — given per-item market quotes + config, build `ProfitOpportunity` per item, compute per-unit economics, filter, and rank. **NO network, DB, file I/O, or CLI** (those are M8b DuckDB reader → M8c CLI, next). The scanner's *input row shape is defined here by us* — it does NOT depend on the DB schema, so M8a is fully self-contained. Reuse M7's `station_trade_opportunity`; do NOT re-derive fees or opportunity math.
 
-**New-workflow note:** you MAY read the files named in **To gather** to pin their live signatures yourself. Write only the files in scope. Anything that changes this design → STOP + §9.
+**New-workflow note:** you MAY read the **To gather** files to pin live signatures. Write only the files in scope. Anything that changes this design → STOP + §9.
 
 ### CONTEXT PACK
 
 **Files in scope (write only these):**
-- EDIT `src/evemarket/analytics/opportunity.py` — currently a 3-line stub (`"""Profit opportunity abstraction stub."""` + `# TODO: M6`). Replace its body with the design below. (`analytics/__init__.py` is empty and re-exports nothing — do NOT touch it.)
-- CREATE `tests/test_opportunity.py`.
+- EDIT `src/evemarket/analytics/station_trade.py` — currently a 3-line stub (`"""Station trading scanner stub."""` + `# TODO: M6`). Replace its body with the design below. (`analytics/__init__.py` is empty — do NOT touch it.)
+- CREATE `tests/test_station_trade.py`.
 - EDIT `HANDOFF.md` §8 (log).
 
-**To gather (read these yourself for exact signatures — do not guess, do not edit them):**
-- `src/evemarket/analytics/fees.py` — confirm and import `broker_fee(order_value, *, broker_relations, faction_standing, corp_standing) -> float` and `sales_tax(sale_value, *, accounting) -> float`. (The test also imports `station_trade_fees` + `TradeFees` for the invariant check below.) Reuse these; do NOT reimplement the formulas or re-validate fee params (the fee fns already raise `ValueError` on bad skills/standings/negative values).
-- `src/evemarket/config.py` — confirm the `Config` fields the factory pulls: `config.skills.broker_relations`, `config.skills.accounting`, `config.standings_factional`, `config.standings_corp` (and `SkillConfig` for the test). These are the SAME fields M6's `station_trade_fees_from_config` used.
+**To gather (read these yourself for exact signatures — do not edit them):**
+- `src/evemarket/analytics/opportunity.py` — confirm + import `station_trade_opportunity(config, buy_price, sell_price, quantity) -> ProfitOpportunity` and the `ProfitOpportunity` props you consume: `.cost`, `.profit`, `.roi` (all `float`). Build opportunities at **quantity=1** (fees are pure-%, so per-unit roi/profit are scale-invariant — see Deferred note). Do NOT reimplement fee/opportunity math.
+- `src/evemarket/config.py` — confirm `Config` (passed straight through to `station_trade_opportunity`; you don't read its fields directly here).
 
-**Design (do EXACTLY this — `from __future__ import annotations`, full type hints, frozen dataclasses, `abc.ABC`/`abstractmethod`, terse docstrings mirroring `fees.py`):**
+**Why quantity=1 is correct (don't overthink):** M6 fees are percentage-only (the flat per-order ISK minimum is deferred-and-noted), so `roi` and per-unit `profit` are identical at any quantity. M8a evaluates per-unit economics; realistic order sizing / ISK-per-day projection (which needs a volume-capture assumption) is deferred to a later, explicitly-modeled step — do NOT bake a capture-rate guess in here (honest analytics per §3).
 
-1. **`class Acquisition(ABC)`** — abstract "how the item is obtained + at what all-in cost".
-   - Plain annotation `quantity: int` on the class body (NOT abstract — just declares the attribute so concrete dataclass fields satisfy it and mypy sees it).
-   - `@property @abstractmethod def total_cost(self) -> float:` — all-in ISK to acquire `quantity` units, including acquisition-side fees.
-   - ⚠️ **Gotcha:** do NOT make `quantity` an `@abstractmethod`. A no-default dataclass field does NOT satisfy an abstract property, so an abstract `quantity` would leave `MarketBuy` non-instantiable. Keep ONLY `total_cost` abstract.
+**Design (do EXACTLY this — `from __future__ import annotations`, full type hints, frozen dataclasses, terse docstrings mirroring `fees.py`/`opportunity.py`):**
 
-2. **`class Disposal(ABC)`** — abstract "how the item is sold + net proceeds".
-   - Plain annotation `quantity: int`.
-   - `@property @abstractmethod def net_proceeds(self) -> float:` — ISK received after disposal-side fees.
+1. **`@dataclass(frozen=True) class MarketQuote`** — one item's in-station two-sided market (input row; the DB reader will produce these in M8b).
+   - Fields: `type_id: int`, `type_name: str`, `best_bid: float` (highest buy-order price in station — your effective station-trade BUY price), `best_ask: float` (lowest sell-order price — your effective SELL price), `daily_volume: float` (units/day traded, liquidity).
 
-3. **`@dataclass(frozen=True) class MarketBuy(Acquisition)`** — buy from market via a limit buy order.
-   - Fields: `price: float`, `quantity: int`, `broker_relations: int = 0`, `faction_standing: float = 0.0`, `corp_standing: float = 0.0`.
-   - `__post_init__`: `ValueError` if `price < 0` or `quantity` not an int `>= 1` (mirror M6: reject `bool`).
-   - `@property gross_value` = `price * quantity`.
-   - `@property total_cost` = `gross_value + broker_fee(gross_value, broker_relations=…, faction_standing=…, corp_standing=…)` (buy order pays a broker fee on placement).
+2. **`@dataclass(frozen=True) class StationTradeResult`** — one ranked suggestion (flat fields for easy CLI rendering in M8c).
+   - Fields: `type_id: int`, `type_name: str`, `buy_price: float`, `sell_price: float`, `spread: float` (`sell_price − buy_price`), `unit_profit: float` (net per unit after all M6 fees), `roi: float`, `daily_volume: float`.
 
-4. **`@dataclass(frozen=True) class MarketSell(Disposal)`** — sell on market via a limit sell order.
-   - Fields: `price: float`, `quantity: int`, `broker_relations: int = 0`, `accounting: int = 0`, `faction_standing: float = 0.0`, `corp_standing: float = 0.0`.
-   - `__post_init__`: same `price>=0` / `quantity int >=1` validation.
-   - `@property gross_value` = `price * quantity`.
-   - `@property net_proceeds` = `gross_value − broker_fee(gross_value, broker_relations=…, faction_standing=…, corp_standing=…) − sales_tax(gross_value, accounting=…)` (sell order pays broker fee on placement + sales tax on sale).
+3. **`def scan_station_trades(quotes: Iterable[MarketQuote], config: Config, *, min_roi: float = 0.0, min_unit_profit: float = 0.0, min_daily_volume: float = 0.0, limit: int | None = None) -> list[StationTradeResult]`** — the core.
+   - For each quote: **skip** if `best_bid <= 0` or `best_ask <= 0` (no two-sided market — can't station-trade).
+   - Build `opp = station_trade_opportunity(config, buy_price=q.best_bid, sell_price=q.best_ask, quantity=1)`.
+   - `unit_profit = opp.profit`; `roi = opp.roi`; `spread = q.best_ask − q.best_bid`.
+   - **Filter** (inclusive): keep only if `unit_profit >= min_unit_profit` AND `roi >= min_roi` AND `q.daily_volume >= min_daily_volume`.
+   - Build `StationTradeResult(...)` for survivors.
+   - **Sort** deterministically: `roi` desc, then `daily_volume` desc, then `type_id` asc (stable tiebreak so tests are deterministic).
+   - If `limit is not None`: validate `limit >= 1` else `ValueError`; return at most `limit` rows (slice after sort).
+   - Validate the three `min_*` thresholds are `>= 0` else `ValueError`. (Do NOT re-validate prices — `station_trade_opportunity` → `MarketBuy`/`MarketSell` already raise on negatives; the `<=0` skip handles the "no market" case before that.)
 
-5. **`@dataclass(frozen=True) class ProfitOpportunity`** — pairs one `Acquisition` + one `Disposal`.
-   - Fields: `acquisition: Acquisition`, `disposal: Disposal`.
-   - `__post_init__`: `ValueError` if `acquisition.quantity != disposal.quantity`.
-   - `@property quantity` → `acquisition.quantity`.
-   - `@property cost` → `acquisition.total_cost`.
-   - `@property revenue` → `disposal.net_proceeds` (already net of fees).
-   - `@property profit` → `revenue − cost`.
-   - `@property roi` → `profit / cost`, but if `cost <= 0` return `0.0` (guard degenerate zero-cost; document it).
+**Conventions to mirror:** pure/deterministic (no I/O/global state); reuse `opportunity.py` (no duplicated fee math); explicit full type hints; `from __future__ import annotations`; keyword-only tuning params; raise `ValueError` (not assert); terse docstrings; no new deps (`dataclasses`, `typing`/`collections.abc` stdlib only — use `collections.abc.Iterable`).
 
-6. **`def station_trade_opportunity(config: Config, buy_price: float, sell_price: float, quantity: int) -> ProfitOpportunity`** — convenience factory mirroring M6's `station_trade_fees_from_config`. Build `MarketBuy(buy_price, quantity, broker_relations=config.skills.broker_relations, faction_standing=config.standings_factional, corp_standing=config.standings_corp)` + `MarketSell(sell_price, quantity, broker_relations=config.skills.broker_relations, accounting=config.skills.accounting, faction_standing=config.standings_factional, corp_standing=config.standings_corp)`; return `ProfitOpportunity(...)`.
-
-**Conventions to mirror:** pure/deterministic (no I/O/global state); reuse `fees.py` (no duplicated formulas/constants); explicit full type hints; `from __future__ import annotations`; keyword-only tuning params; raise `ValueError` (not assert); terse docstrings; no new deps (`abc`, `dataclasses` stdlib only). Naming caution: import the fee functions at module top (`from evemarket.analytics.fees import broker_fee, sales_tax`); do NOT name any property/field `broker_fee`/`sales_tax`.
-
-**Boundary** — gather only the To-gather files; write only the in-scope files; do not expand scope or re-plan. Design change needed → STOP + §9.
+**Boundary** — gather only the To-gather files; write only the in-scope files; do not add DB/CLI yet; do not expand scope. Design change needed → STOP + §9.
 
 **Verification (paste §8, terse per §2):**
-- `python -m pytest -q` (bundled-Python abs path if bare `python` missing) — prior **45 passed, 1 skipped stays green** + new `tests/test_opportunity.py` pass. Cover (pure, no I/O):
-  - Zero skills: `MarketBuy(100, 10).total_cost == 1030` (1000 + 30); `MarketSell(120, 10).net_proceeds == 1074` (1200 − 36 − 90); `ProfitOpportunity(MarketBuy(100,10), MarketSell(120,10))` → `cost==1030`, `revenue==1074`, `profit==44`, `roi==pytest.approx(44/1030)`, `quantity==10`.
-  - **Invariant** (ties seam to M6): for matching skills/standings/qty, `opp.profit == pytest.approx((sell_price − buy_price)*quantity − station_trade_fees(buy_price, sell_price, quantity, broker_relations=…, accounting=…, faction_standing=…, corp_standing=…).total)`.
-  - Factory: `station_trade_opportunity(Config(skills=SkillConfig(broker_relations=5, accounting=5), standings_factional=10, standings_corp=10), 100, 120, 10)` → `cost==pytest.approx(1010)`, `revenue==pytest.approx(1147.5)`, `profit==pytest.approx(137.5)`.
-  - `ValueError`: quantity mismatch `ProfitOpportunity(MarketBuy(100,10), MarketSell(120,5))`; `MarketBuy(-1, 10)`; `MarketSell(120, 0)`; out-of-range skill propagates from fees, e.g. `MarketBuy(100, 10, broker_relations=6).total_cost`.
-  - Use `pytest.approx` for float compares.
+- `python -m pytest -q` (bundled-Python abs path if bare `python` missing) — prior **49 passed, 1 skipped stays green** + new `tests/test_station_trade.py` pass. Cover (pure, no I/O):
+  - **Per-unit economics, zero-skill config** (`Config()` defaults — broker_relations 0/accounting 0/standings 0): a `MarketQuote(type_id=34, type_name="Tritanium", best_bid=100, best_ask=120, daily_volume=1_000_000)` → one `StationTradeResult` with `buy_price==100`, `sell_price==120`, `spread==pytest.approx(20)`, `unit_profit==pytest.approx(4.4)` (107.4 net − 103 cost), `roi==pytest.approx(4.4/103)`. (Mirrors M7's 44/1030 at 1/10 scale — confirms fee reuse.)
+  - **Skip no-market quotes:** `best_bid=0` (or `best_ask=0`) → excluded from results.
+  - **Threshold filters:** with the 4.4-profit item, `min_unit_profit=5` → empty; `min_roi=0.05` (> 0.0427) → empty; `min_daily_volume=2_000_000` → empty; defaults (all 0) → kept.
+  - **Sort + limit:** feed ≥3 quotes with distinct roi; assert output ordered by roi desc (and `limit=2` returns the top 2). Add a roi tie broken by `daily_volume` desc to prove the tiebreak.
+  - **`ValueError`:** `min_roi=-1`, `min_unit_profit=-1`, `min_daily_volume=-1`, `limit=0`.
+  - Use `pytest.approx` for floats. Build `Config()` with no args for the zero-skill case (or set skills/standings explicitly if defaults aren't all-zero — read `config.py` to confirm defaults; if non-zero, pass explicit zeros).
 - `python -m ruff check .` → clean.
-- `python -m mypy src/` → **clean** (`Success: no issues found in … source files`) — gate stays green. (If mypy flags the abstract-property/dataclass interplay, recheck the §3 gotcha; do NOT silence with `# type: ignore` without noting it in §8.)
+- `python -m mypy src/` → **clean** (`Success: no issues found in … source files`) — gate stays green.
 - NO live run (pure calc).
-- Pre-commit `git status --short`: only `src/evemarket/analytics/opportunity.py`, `tests/test_opportunity.py`, `HANDOFF.md` (plus the already-present untracked `HANDOFF_ARCHIVE.md` — do NOT stage it); no `data/`/`*.duckdb`/parquet. Commit `feat: ProfitOpportunity seam (Acquisition/Disposal) -> analytics/opportunity.py (M7)`; `git push origin main` (no force). Include `HANDOFF.md`.
+- Pre-commit `git status --short`: only `src/evemarket/analytics/station_trade.py`, `tests/test_station_trade.py`, `HANDOFF.md` (the untracked `HANDOFF_ARCHIVE.md` + modified `AGENTS.md` are unrelated planner docs — do NOT stage them); no `data/`/`*.duckdb`/parquet. Commit `feat: pure station-trade ranking core -> analytics/station_trade.py (M8a)`; `git push origin main` (no force). Include `HANDOFF.md`.
 
-When done: append §8 entry (terse, **INCLUDE the commit hash**) and STOP. After M7 → M8 `station_trade.py` (first scanner: consumes opportunities, ranks by profit/roi; CLI lands here) on review.
+When done: append §8 entry (terse, **INCLUDE the commit hash**) and STOP. After M8a → **M8b** `station_trade` DuckDB reader (best bid/ask per type from latest order snapshot + history volume → `MarketQuote` rows; Claude will gather the store schema for that pack) → **M8c** CLI `scan` command.
 
-> Completed task Context Packs (M4a, M4b, M5a, M5b, M5c, M5-FIX, M6) archived/superseded — load-bearing facts retained in §7 (verdicts) + §8 (logs); full early packs in `HANDOFF_ARCHIVE.md` §A.
+> Completed task Context Packs (M4a–M7) archived/superseded — load-bearing facts retained in §7 (verdicts) + §8 (logs); full early packs in `HANDOFF_ARCHIVE.md` §A.
 
 ## 7. Planner/Debugger Notes (Claude)
 
@@ -159,6 +146,7 @@ When done: append §8 entry (terse, **INCLUDE the commit hash**) and STOP. After
 - M5a prices ✅ `9666724` · M5b scheduler ✅ `169bde0` · M5c quality ✅ `7eb3760`
 - M5-FIX mypy-clean ✅ `f654b2f` (+docs `e7c851e`) — **Phase 1 COMPLETE to standard.**
 - M6 fees ✅ `2cee47b` (+docs `f10b9c5`) — first Phase-2 primitive.
+- M7 opportunity seam ✅ `46261d0` (+docs `18af9c7`) — `ProfitOpportunity`/`Acquisition`/`Disposal`.
 
 **Standing decisions / known non-blockers (carry forward):**
 - **"No new deps" is hard:** if Codex needs one → STOP + §9 for planner sign-off; never silently `pip install` to make tests pass (M3-FIX hidden-pytz trap).
@@ -169,6 +157,8 @@ When done: append §8 entry (terse, **INCLUDE the commit hash**) and STOP. After
 - **Deferred (non-blocking, M0):** switch `Config`/`SkillConfig` `BaseSettings`→`BaseModel` so TOML is sole config source (BaseSettings allows silent env-var overrides). Small future task. (Also tracked §9.)
 
 **Recent verdicts:**
+- **M7 REVIEW: DONE.** `analytics/opportunity.py` + `tests/test_opportunity.py` match the pack exactly. The abstract-property gotcha was handled right: `quantity` is a plain annotation on both ABCs, only `total_cost`/`net_proceeds` abstract → concrete frozen dataclasses instantiate (49 tests construct them). Legs reuse M6 `broker_fee`/`sales_tax` (no duplicated formulas); `MarketBuy.total_cost = gross+broker`, `MarketSell.net_proceeds = gross−broker−tax`; `ProfitOpportunity` has quantity-match validation + `cost`/`revenue`/`profit`/`roi`(cost≤0 guard)/`quantity`; factory mirrors M6 config delegate. Verified math: zero-skill `1030/1074/44`, `roi=44/1030`; invariant `profit = spread − station_trade_fees.total` (=137.5 at BR5/acc5/f10/c10); factory floor case `1010/1147.5/137.5`; all 4 `ValueError` paths. Git: `46261d0` + docs `18af9c7` on `main`, pushed; commit touched exactly the 3 intended files, no `data/`. §8 verification (`49 passed, 1 skipped` / ruff clean / mypy 23 files clean) matches. **Codex's first run as bounded gatherer under the new workflow — read `fees.py`/`config.py`/the stub itself, stayed in scope, logged what it read (§8). Workflow change validated.** Seam to-standard → unblocks M8.
+- **M8 decomposed; M8a drafted (Context Pack).** First scanner split into **M8a pure ranking core → M8b DuckDB reader → M8c CLI** (one-step-at-a-time; mirrors Phase-1's M4a/b, M5a/b/c). M8a is fully self-contained: *we define the input row shape* (`MarketQuote`: type_id/type_name/best_bid/best_ask/daily_volume), so it has **zero dependency on the store schema** — that's why it can be packed precisely now without me gathering DB internals (those I'll gather for M8b). Design: `MarketQuote` + `StationTradeResult` (flat, CLI-ready) frozen dataclasses + `scan_station_trades(quotes, config, *, min_roi, min_unit_profit, min_daily_volume, limit)` — skip non-two-sided quotes (`best_bid/ask<=0`), build `station_trade_opportunity(...)` at **quantity=1** (fees pure-%, so roi/unit-profit scale-invariant; ISK/day projection w/ capture-rate assumption deferred to keep it honest per §3), filter on thresholds, sort roi desc → volume desc → type_id asc (deterministic), optional limit. Reuses M7 (no duplicated math). Review focus on return: per-unit numbers (4.4 / 4.4/103, the 1/10-scale echo of M7), no-market skip, threshold filters, deterministic sort+limit+tiebreak, `ValueError` on negative thresholds/`limit=0`, pure (no I/O/DB/CLI), no new deps, only the 2 files+HANDOFF touched, mypy/ruff clean, commit hash in §8.
 - **M6 REVIEW: DONE.** `analytics/fees.py` + `tests/test_fees.py` match the pack exactly. Verified every formula/constant by hand: broker rate floor `BR5+f10+c10 → 0.01` exactly (holds, not below); negative faction `−10 → 0.033 > 0.03`; `sales_tax_rate(5)=0.03375`; `station_trade_fees(100,120,10)=30/36/90/156`; `from_config` floor case `=10/12/40.5/62.5`. Pure (no I/O), `ValueError` on bad input, `TradeFees` frozen, named constants, no new deps; bonus `bool`-rejection on int params (correct). Git: `2cee47b` + docs `f10b9c5` on `main`, pushed, no `data/` staged; §8 verification (`45 passed, 1 skipped` / ruff clean / mypy 23 files clean) matches. Fee primitive is to-standard → unblocks M7.
 - **M7 drafted (Context Pack) — the §4 generic seam.** `analytics/opportunity.py`: `Acquisition`/`Disposal` ABCs (only `total_cost`/`net_proceeds` abstract; `quantity` a plain annotation to dodge the no-default-field-vs-abstract-property trap → keeps concrete dataclasses instantiable) + frozen `MarketBuy`/`MarketSell` reusing M6 `broker_fee`/`sales_tax` (buy leg = gross+broker; sell leg = gross−broker−tax) + frozen `ProfitOpportunity(acquisition, disposal)` exposing `cost`/`revenue`(net)/`profit`/`roi`(guard cost≤0)/`quantity` with quantity-match validation + `station_trade_opportunity(config,…)` factory mirroring M6's config delegate. First use of the new workflow: delegated the stable `fees.py`/`config.py` signature-gathering to Codex ("To gather"), pasted only the load-bearing seam design + the abstract-property gotcha. Review focus on return: ABCs correct & instantiable (no abstract `quantity`), legs reuse fees (no duplicated formulas), the cross-check invariant `profit == spread − station_trade_fees.total` holds, zero-skill numbers (1030/1074/44) + factory floor case (1010/1147.5/137.5), `ValueError` on quantity-mismatch/negative/zero, pure (no I/O), no new deps, mypy/ruff clean, only the 2 files+HANDOFF touched, commit hash in §8.
 - **M5-FIX REVIEW: DONE — PHASE 1 FULLY TO-STANDARD.** Verified via git: commits `f654b2f` (fix) + `e7c851e` (docs log) on `main`, tree clean, nothing unpushed. Codex §8: `mypy src/` → `Success: no issues found in 23 source files` (the new gate), `pytest` → `36 passed, 1 skipped` (UNCHANGED = behavior-preserving), `ruff` clean; only the 4 intended files touched (`pyproject.toml`, `writers.py`, `sde/load.py`, `HANDOFF.md`); no `data/` staged. The lone Phase-1 audit gap is closed. **Phase 1 data pipeline COMPLETE to standard. M0–M5-FIX DONE.**
@@ -179,7 +169,7 @@ When done: append §8 entry (terse, **INCLUDE the commit hash**) and STOP. After
 > Full per-task logs M0–M5-FIX archived in `HANDOFF_ARCHIVE.md` §C.
 > Template: `### M<n> — <title> — <date> — COMPLETE/BLOCKED` then: Files | Commands+result | Verification | Deviations | Questions.
 
-_(Append new entries below — next: M6.)_
+_(Append new entries below — next: M8a.)_
 
 ### M6 — deterministic broker fee + sales tax — 2026-06-28 — COMPLETE
 - Files: `src/evemarket/analytics/fees.py`, `tests/test_fees.py`, `HANDOFF.md`.
@@ -208,6 +198,19 @@ _(Append new entries below — next: M6.)_
 - Deviations: used bundled Python abs path; bare `python` known unavailable. No live run; pure calc. Did not touch/stage unrelated `AGENTS.md` or `HANDOFF_ARCHIVE.md`.
 - Questions: none.
 - Commit: `46261d0`.
+
+### M8a — pure station-trade ranking core — 2026-06-28 — COMPLETE
+- Files: `src/evemarket/analytics/station_trade.py`, `tests/test_station_trade.py`, `HANDOFF.md`.
+- Gathered/read: `src/evemarket/analytics/station_trade.py` stub; `src/evemarket/analytics/opportunity.py` (`station_trade_opportunity`, `ProfitOpportunity.cost/profit/roi`); `src/evemarket/config.py` (`Config` defaults zero skills/standings).
+- Commands+result:
+  - `C:\Users\M0obo\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe -m pytest -q --basetemp .pytest-tmp` → `57 passed, 1 skipped, 1 warning` (pytest cache WinError 5 only).
+  - `C:\Users\M0obo\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe -m ruff check .` → `All checks passed!`
+  - `C:\Users\M0obo\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe -m mypy src/` → `Success: no issues found in 23 source files`
+  - `git status --short` → scoped files + unrelated modified `AGENTS.md` + unrelated untracked `HANDOFF_ARCHIVE.md`; no `data/`/duckdb/parquet.
+- Verification: PASS; per-unit economics, no-market skip, threshold filters, deterministic sort+limit+tiebreak, ValueError cases covered.
+- Deviations: used bundled Python abs path; bare `python` known unavailable. No live run; pure calc. Did not touch/stage unrelated `AGENTS.md` or `HANDOFF_ARCHIVE.md`.
+- Questions: none.
+- Commit: pending.
 
 ## 9. Open Questions / Blockers
 
