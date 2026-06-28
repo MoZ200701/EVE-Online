@@ -207,7 +207,7 @@ _(Append new entries below — next: M6.)_
 - Verification: PASS; ABCs instantiable, fee reuse invariant, zero-skill totals, config factory, ValueError cases covered.
 - Deviations: used bundled Python abs path; bare `python` known unavailable. No live run; pure calc. Did not touch/stage unrelated `AGENTS.md` or `HANDOFF_ARCHIVE.md`.
 - Questions: none.
-- Commit: pending.
+- Commit: `46261d0`.
 
 ## 9. Open Questions / Blockers
 
