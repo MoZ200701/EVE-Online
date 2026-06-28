@@ -258,7 +258,7 @@ _(Append new entries below — next: M8c.)_
 - Verification: PASS; happy-path table, no-snapshot message, filter-empty message, limit-one output covered with hermetic tmp fixtures.
 - Deviations: used bundled Python abs path; bare `python` known unavailable. No live run/network; CLI tests use tmp DuckDB/parquet/SDE fixtures only.
 - Questions: none.
-- Commit: pending.
+- Commit: `0bf9a99`.
 
 ## 9. Open Questions / Blockers
 
