@@ -17,7 +17,9 @@ from evemarket.ingest.orders import ingest_orders
 from evemarket.ingest.prices import ingest_prices
 from evemarket.scheduler import build_scheduler
 from evemarket.sde.load import connect, download_sde, load_sde, table_counts
+from evemarket.analytics.station_trade import StationTradeResult, scan_station_trades
 from evemarket.store.quality import run_quality_checks
+from evemarket.store.readers import read_station_quotes
 from evemarket.store.schema import ensure_market_db
 
 app = typer.Typer(help="EVE Market Tool.")
@@ -308,6 +310,138 @@ def ingest_prices_command(
 async def _run_ingest_prices(config):
     async with ESIClient(config=config) as client:
         return await ingest_prices(client, config)
+
+
+@app.command("scan")
+def scan_command(
+    config: Path = typer.Option(
+        Path("config.toml"),
+        "--config",
+        "-c",
+        help="Path to a TOML configuration file.",
+    ),
+    region: int | None = typer.Option(
+        None,
+        "--region",
+        help="EVE region ID. Defaults to the first configured tracked region.",
+    ),
+    station: int | None = typer.Option(
+        None,
+        "--station",
+        help="EVE station ID. Defaults to the configured home hub station.",
+    ),
+    min_roi: float = typer.Option(
+        0.0,
+        "--min-roi",
+        help="Minimum ROI fraction.",
+    ),
+    min_unit_profit: float = typer.Option(
+        0.0,
+        "--min-unit-profit",
+        help="Minimum net ISK profit per unit.",
+    ),
+    min_daily_volume: float = typer.Option(
+        0.0,
+        "--min-daily-volume",
+        help="Minimum average daily traded volume.",
+    ),
+    limit: int = typer.Option(
+        20,
+        "--limit",
+        min=1,
+        help="Maximum number of opportunities to print.",
+    ),
+    volume_window_days: int = typer.Option(
+        30,
+        "--volume-window-days",
+        min=1,
+        help="Trailing market-history window for average daily volume.",
+    ),
+) -> None:
+    """Scan latest station-trade opportunities."""
+
+    loaded_config = load_config(config)
+    selected_region = region or loaded_config.tracked_regions[0]
+    selected_station = (
+        station if station is not None else loaded_config.home_hub_station_id
+    )
+    quotes = read_station_quotes(
+        loaded_config,
+        selected_region,
+        selected_station,
+        volume_window_days=volume_window_days,
+    )
+    results = scan_station_trades(
+        quotes,
+        loaded_config,
+        min_roi=min_roi,
+        min_unit_profit=min_unit_profit,
+        min_daily_volume=min_daily_volume,
+        limit=limit,
+    )
+
+    typer.echo(
+        f"Region: {selected_region}  Station: {selected_station}  Quotes: {len(quotes)}"
+    )
+    if not quotes:
+        typer.echo(
+            f"No market snapshot found for region {selected_region}. "
+            "Run ingest-orders first."
+        )
+        return
+    if not results:
+        typer.echo("No station-trade opportunities met the filters.")
+        return
+
+    typer.echo(_format_scan_table(results))
+
+
+def _format_scan_table(results: list[StationTradeResult]) -> str:
+    rows = [
+        (
+            str(result.type_id),
+            result.type_name,
+            f"{result.buy_price:,.2f}",
+            f"{result.sell_price:,.2f}",
+            f"{result.spread:,.2f}",
+            f"{result.unit_profit:,.2f}",
+            f"{result.roi * 100:,.2f}",
+            f"{result.daily_volume:,.2f}",
+        )
+        for result in results
+    ]
+    headers = (
+        "type_id",
+        "type_name",
+        "buy",
+        "sell",
+        "spread",
+        "unit_profit",
+        "roi%",
+        "daily_vol",
+    )
+    widths = [
+        max(len(headers[index]), *(len(row[index]) for row in rows))
+        for index in range(len(headers))
+    ]
+    lines = [
+        (
+            f"{headers[0]:>{widths[0]}}  {headers[1]:<{widths[1]}}  "
+            f"{headers[2]:>{widths[2]}}  {headers[3]:>{widths[3]}}  "
+            f"{headers[4]:>{widths[4]}}  {headers[5]:>{widths[5]}}  "
+            f"{headers[6]:>{widths[6]}}  {headers[7]:>{widths[7]}}"
+        )
+    ]
+    for row in rows:
+        lines.append(
+            (
+                f"{row[0]:>{widths[0]}}  {row[1]:<{widths[1]}}  "
+                f"{row[2]:>{widths[2]}}  {row[3]:>{widths[3]}}  "
+                f"{row[4]:>{widths[4]}}  {row[5]:>{widths[5]}}  "
+                f"{row[6]:>{widths[6]}}  {row[7]:>{widths[7]}}"
+            )
+        )
+    return "\n".join(lines)
 
 
 @app.command("schedule")
