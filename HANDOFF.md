@@ -168,7 +168,7 @@ _(Append new entries below — next: M6.)_
 - Verification: PASS; fee formulas, 1% floor, negative-standing increase, Accounting V, round-trip totals, config delegate, ValueError cases covered.
 - Deviations: used bundled Python abs path; bare `python` unavailable. No live run; pure calc.
 - Questions: none.
-- Commit: pending.
+- Commit: `2cee47b`.
 
 ## 9. Open Questions / Blockers
 
