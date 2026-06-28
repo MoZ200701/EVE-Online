@@ -62,7 +62,7 @@ src/evemarket/: __init__.py  config.py  cli.py
   esi/{__init__,client,models}.py
   sde/{__init__,load}.py
   ingest/{__init__,orders,history,prices,backfill}.py
-  store/{__init__,schema,writers,quality}.py
+  store/{__init__,schema,writers,quality,readers}.py   # readers.py added M8b (planner sign-off 2026-06-28)
   analytics/{__init__,fees,opportunity,station_trade,haul}.py
 tests/
 ```
@@ -71,69 +71,81 @@ tests/
 
 **Phase 1 — data pipeline**
 - M0 Scaffold ✅ | M1 SDE→`sde.duckdb` ✅ | REPO git+push ✅ | M2 ESI client ✅ | M3 Order snapshots + `ingest_runs` ✅ | M4a ESI daily history → `market_history` ✅ | M4b everef.net bulk backfill ✅ | M5a ESI prices → `market_prices` ✅
-- **M5** Prices ✅ | scheduler (M5b) ✅ | data-quality (M5c) ✅ | M5-FIX mypy-clean ✅ — **Phase 1 COMPLETE & to-standard.** | M6 `analytics/fees.py` ✅ `2cee47b` | M7 `analytics/opportunity.py` seam ✅ `46261d0`. ← **CURRENT: Phase 2 / M8a — `analytics/station_trade.py` pure ranking core (§6).**
+- **M5** Prices ✅ | scheduler (M5b) ✅ | data-quality (M5c) ✅ | M5-FIX mypy-clean ✅ — **Phase 1 COMPLETE & to-standard.** | M6 `analytics/fees.py` ✅ `2cee47b` | M7 `analytics/opportunity.py` seam ✅ `46261d0` | M8a `station_trade.py` ranking core ✅ `29f7a9c`. ← **CURRENT: Phase 2 / M8b — `store/readers.py` DuckDB→`MarketQuote` reader (§6).**
 
-**Phase 2 — deterministic analytics (stubbed):** `fees.py` ✅, `opportunity.py` ✅, `station_trade.py` (first scanner — **decomposed: M8a pure ranking → M8b DuckDB reader → M8c CLI**), then `haul.py`.
+**Phase 2 — deterministic analytics (stubbed):** `fees.py` ✅, `opportunity.py` ✅, `station_trade.py` (first scanner — **decomposed: M8a pure ranking ✅ → M8b DuckDB reader → M8c CLI**), then `haul.py`.
+
+**Phase 3 — forecasting & long-hold (position) trading** *(committed 2026-06-28; honest-backtest-first; starts only after Phase 2 scanners land — no jumping ahead).*
+Goal: predict forward price/return over a **multi-week horizon** (target ~2–6 wks, configurable — covers "buy and hold a month+") and surface backtested long-hold suggestions via the existing `ProfitOpportunity` seam (a hold = a `Disposal` at a *predicted future* price). Trained **locally** on EVE history (GBM / time-series per §3), NOT LLM.
+- **P3-0 Backtest harness FIRST (the gate):** walk-forward, strict out-of-sample, point-in-time (no lookahead/survivorship), realistic fills + reuse M6 fees. Baselines = naive persistence, seasonal-naive, buy-&-hold item, hold-ISK. Metrics: directional hit rate, **risk-adjusted expectancy (ISK/trade net fees)**, profit factor, max drawdown, return vs each baseline, sample size/significance. Nothing downstream is trusted until this exists.
+- **P3-1 Feature pipeline:** point-in-time features (returns, realized vol, volume/liquidity trends, rolling stats, calendar/seasonality, spread). Zero future leakage.
+- **P3-2 Forecast model:** horizon-return forecaster with probability/confidence; trained + persisted locally.
+- **P3-3 Position-trade scanner:** forecasts → ranked long-hold opportunities (future-priced `Disposal`), gated by backtested edge + confidence, shown WITH downside/uncertainty.
+- **P3-4 Acceptance gate:** a model ships only if it beats the baselines out-of-sample on expectancy at adequate sample size.
+
+**Success bar — "net even" by construction (the honest form of the ">50% hit rate" ask):**
+- **Abstention is a first-class output.** A long-hold trade is surfaced ONLY when its backtested expectancy net of fees is positive; otherwise the app recommends *nothing* (or falls back to the deterministic station/haul edge). The decision rule's downside floor is therefore "do nothing = 0 loss", never "act and bleed" — that is what makes net-even defensible.
+- **>50% directional hit rate = sanity floor ONLY, not the goal.** Binding gate = positive risk-adjusted expectancy net of fees that **beats the naive + buy-&-hold baselines out-of-sample** at significant sample size. (Hit rate alone lies: you can win >50% and still lose ISK, or hit >50% trivially in a rising market while lagging buy-&-hold.)
+- **Hard honesty limit (per §3):** exogenous shocks (balance patches, scarcity changes, wars, releases) are NOT predictable from price history — Phase 3 sells *backtested probabilistic edges with explicit downside*, never certainty. Tail risk on any single month-long position is real and must be surfaced.
+
+**Deps:** Phase 3 needs ML libs (GBM and/or time-series) — declared at P3 kickoff **with sign-off** per the "no new deps" rule (§7); do NOT add before then.
 
 Definition of done is per-step in each task prompt.
 
-## 6. Current Task (Codex) — M8a: `analytics/station_trade.py` — pure ranking core
+## 6. Current Task (Codex) — M8b: `store/readers.py` — DuckDB → `MarketQuote` reader
 
-M7 DONE (§7). Begin the first scanner. **M8 is decomposed**: this task (M8a) is the **pure ranking core only** — given per-item market quotes + config, build `ProfitOpportunity` per item, compute per-unit economics, filter, and rank. **NO network, DB, file I/O, or CLI** (those are M8b DuckDB reader → M8c CLI, next). The scanner's *input row shape is defined here by us* — it does NOT depend on the DB schema, so M8a is fully self-contained. Reuse M7's `station_trade_opportunity`; do NOT re-derive fees or opportunity math.
+M8a DONE (§7). Now the **I/O boundary** that feeds it: a DuckDB/Parquet reader that produces `MarketQuote` rows for one station from real ingested data. This is the **only impure layer** — `station_trade.py` stays pure (do NOT add I/O there). Next is M8c (CLI `scan` wiring reader→scanner). Schema is mostly pasted below (planner-gathered); only the SDE name table is yours to read.
 
-**New-workflow note:** you MAY read the **To gather** files to pin live signatures. Write only the files in scope. Anything that changes this design → STOP + §9.
+**New-workflow note:** read the **To gather** files for the SDE name table + helper signatures; write only the files in scope. Anything that changes this design → STOP + §9.
 
 ### CONTEXT PACK
 
 **Files in scope (write only these):**
-- EDIT `src/evemarket/analytics/station_trade.py` — currently a 3-line stub (`"""Station trading scanner stub."""` + `# TODO: M6`). Replace its body with the design below. (`analytics/__init__.py` is empty — do NOT touch it.)
-- CREATE `tests/test_station_trade.py`.
+- CREATE `src/evemarket/store/readers.py` (new module — planner-approved addition to §4 layout; mirror `writers.py` style).
+- CREATE `tests/test_readers.py`.
 - EDIT `HANDOFF.md` §8 (log).
+- Do NOT touch `analytics/station_trade.py` (keep it pure), `writers.py`, `schema.py`, or anything else.
 
-**To gather (read these yourself for exact signatures — do not edit them):**
-- `src/evemarket/analytics/opportunity.py` — confirm + import `station_trade_opportunity(config, buy_price, sell_price, quantity) -> ProfitOpportunity` and the `ProfitOpportunity` props you consume: `.cost`, `.profit`, `.roi` (all `float`). Build opportunities at **quantity=1** (fees are pure-%, so per-unit roi/profit are scale-invariant — see Deferred note). Do NOT reimplement fee/opportunity math.
-- `src/evemarket/config.py` — confirm `Config` (passed straight through to `station_trade_opportunity`; you don't read its fields directly here).
+**To gather (read yourself — do not edit):**
+- `src/evemarket/sde/load.py` — find the **SDE DuckDB table + columns mapping `type_id` → type name** (and confirm the sde db path/filename under `config.data_dir`, expected `sde.duckdb`). You'll join names off this; fall back to `f"#{type_id}"` when a name is missing or the sde db is absent.
+- `src/evemarket/store/writers.py` — use `write_orders_snapshot(orders, region_id, snapshot_ts, snapshots_root)` to build snapshot **test fixtures**; confirm `ORDER_SCHEMA` columns.
+- `src/evemarket/store/schema.py` — `ensure_market_db(path)` returns a connection (context-managed); table-name consts `INGEST_RUNS_TABLE='ingest_runs'`, `MARKET_HISTORY_TABLE='market_history'`.
+- `src/evemarket/analytics/station_trade.py` — import `MarketQuote` (fields: `type_id:int, type_name:str, best_bid:float, best_ask:float, daily_volume:float`). The reader RETURNS these; it does not import the scanner.
+- `src/evemarket/config.py` — confirm `Config.data_dir: Path` (root holding `market.duckdb`, `sde.duckdb`, `snapshots/`).
 
-**Why quantity=1 is correct (don't overthink):** M6 fees are percentage-only (the flat per-order ISK minimum is deferred-and-noted), so `roi` and per-unit `profit` are identical at any quantity. M8a evaluates per-unit economics; realistic order sizing / ISK-per-day projection (which needs a volume-capture assumption) is deferred to a later, explicitly-modeled step — do NOT bake a capture-rate guess in here (honest analytics per §3).
+**Schema (planner-gathered — paste, trust these):**
+- Order snapshot parquet at `data_dir/snapshots/orders/region=<id>/date=<YYYY-MM-DD>/<ts>.parquet`, cols: `order_id, type_id, is_buy_order(bool), price(double), volume_remain, volume_total, min_volume, location_id, system_id, range, duration, issued, region_id, snapshot_ts`.
+- `ingest_runs(run_id, source, region_id, snapshot_ts, started_at, finished_at, status, order_count, pages, esi_expires, snapshot_path, error)` — orders snapshots are `source='esi_orders'`, success rows have `status='success'` and a non-null `snapshot_path`.
+- `market_history(region_id, type_id, date, average, highest, lowest, order_count, volume)`, PK `(region_id,type_id,date)`.
+- Key IDs: The Forge region `10000002`, Jita IV-4 station `location_id 60003760`.
 
-**Design (do EXACTLY this — `from __future__ import annotations`, full type hints, frozen dataclasses, terse docstrings mirroring `fees.py`/`opportunity.py`):**
+**Deliverable — `def read_station_quotes(config: Config, region_id: int, station_id: int, *, volume_window_days: int = 30) -> list[MarketQuote]`:**
+1. Paths from `config.data_dir.expanduser()`: `market.duckdb`, `sde.duckdb`. Open market db via `ensure_market_db` (context-managed; close it). Validate `volume_window_days >= 1` else `ValueError`.
+2. **Latest snapshot:** `SELECT snapshot_path FROM ingest_runs WHERE source='esi_orders' AND status='success' AND region_id=? AND snapshot_path IS NOT NULL ORDER BY snapshot_ts DESC LIMIT 1`. None → return `[]`.
+3. **Best bid/ask at station** from that parquet: `SELECT type_id, MAX(price) FILTER (WHERE is_buy_order) AS best_bid, MIN(price) FILTER (WHERE NOT is_buy_order) AS best_ask FROM read_parquet(?) WHERE location_id = ? GROUP BY type_id`. (One-sided types → NULL on a side.)
+4. **Trailing daily volume:** ref date `SELECT MAX(date) FROM market_history WHERE region_id=?`; if non-null, `SELECT type_id, AVG(volume) AS daily_volume FROM market_history WHERE region_id=? AND date >= ? GROUP BY type_id` with window-start = ref − `(volume_window_days-1)` days. Missing → 0.0.
+5. **Names:** if `sde.duckdb` exists, `ATTACH` it READ_ONLY and left-join `type_id`→name (table/cols from `sde/load.py`); else/ missing → `f"#{type_id}"`. DETACH/close.
+6. **Assemble** one `MarketQuote` per type present in step-3, with `best_bid`/`best_ask`/`daily_volume` COALESCEd to `0.0` (NULL one-sided → 0.0 so the M8a scanner skips it). Return sorted by `type_id` (deterministic).
 
-1. **`@dataclass(frozen=True) class MarketQuote`** — one item's in-station two-sided market (input row; the DB reader will produce these in M8b).
-   - Fields: `type_id: int`, `type_name: str`, `best_bid: float` (highest buy-order price in station — your effective station-trade BUY price), `best_ask: float` (lowest sell-order price — your effective SELL price), `daily_volume: float` (units/day traded, liquidity).
+**Conventions:** ALL I/O lives here (station_trade.py stays pure); pass values as DuckDB **query params** (`?`), never string-interpolate values (identifiers/table names are trusted consts); close every connection (context managers / try-finally); full type hints; `from __future__ import annotations`; terse docstrings mirroring `writers.py`; **no new deps** (`duckdb`, `polars`, stdlib only).
 
-2. **`@dataclass(frozen=True) class StationTradeResult`** — one ranked suggestion (flat fields for easy CLI rendering in M8c).
-   - Fields: `type_id: int`, `type_name: str`, `buy_price: float`, `sell_price: float`, `spread: float` (`sell_price − buy_price`), `unit_profit: float` (net per unit after all M6 fees), `roi: float`, `daily_volume: float`.
+**Boundary** — gather only the To-gather files; write only the 3 in-scope; do NOT build the CLI (M8c) or touch the pure scanner. Design change needed → STOP + §9.
 
-3. **`def scan_station_trades(quotes: Iterable[MarketQuote], config: Config, *, min_roi: float = 0.0, min_unit_profit: float = 0.0, min_daily_volume: float = 0.0, limit: int | None = None) -> list[StationTradeResult]`** — the core.
-   - For each quote: **skip** if `best_bid <= 0` or `best_ask <= 0` (no two-sided market — can't station-trade).
-   - Build `opp = station_trade_opportunity(config, buy_price=q.best_bid, sell_price=q.best_ask, quantity=1)`.
-   - `unit_profit = opp.profit`; `roi = opp.roi`; `spread = q.best_ask − q.best_bid`.
-   - **Filter** (inclusive): keep only if `unit_profit >= min_unit_profit` AND `roi >= min_roi` AND `q.daily_volume >= min_daily_volume`.
-   - Build `StationTradeResult(...)` for survivors.
-   - **Sort** deterministically: `roi` desc, then `daily_volume` desc, then `type_id` asc (stable tiebreak so tests are deterministic).
-   - If `limit is not None`: validate `limit >= 1` else `ValueError`; return at most `limit` rows (slice after sort).
-   - Validate the three `min_*` thresholds are `>= 0` else `ValueError`. (Do NOT re-validate prices — `station_trade_opportunity` → `MarketBuy`/`MarketSell` already raise on negatives; the `<=0` skip handles the "no market" case before that.)
+**Verification (paste §8, terse per §2) — tests are HERMETIC (tmp fixtures, NO network/live data):**
+- Build fixtures under a `tmp_path` data_dir: (a) write an order snapshot via `write_orders_snapshot` with type 34 buy@100 + sell@120 at station `60003760`, type 35 sell@200 only, and a type-34 order at a DIFFERENT `location_id` (to prove the station filter); (b) `ensure_market_db` + insert an `ingest_runs` success row pointing at that parquet + `market_history` volume rows for 34; (c) a tiny `sde.duckdb` with the name table mapping 34→"Tritanium" (35 absent → fallback). Then:
+  - `read_station_quotes(config, 10000002, 60003760)` → `MarketQuote(34,"Tritanium",100,120, avg-volume)` and `MarketQuote(35,"#35",0.0,200.0,0.0)` (one-sided bid→0.0; no name→fallback; no history→0.0). The off-station order is excluded.
+  - **Latest-snapshot:** insert two success `ingest_runs` (older + newer ts, different parquet) → the NEWER one's quotes are returned.
+  - **No snapshot** for the region → `[]`.
+  - **End-to-end:** feed the returned quotes into `scan_station_trades(..., Config())` → type 34 survives, type 35 skipped (no bid).
+  - `volume_window_days=0` → `ValueError`.
+  - `pytest.approx` for floats.
+- `python -m pytest -q` (bundled-Python abs path; `--basetemp .pytest-tmp` if AppData temp denied) — prior **57 passed, 1 skipped stays green** + new pass.
+- `python -m ruff check .` → clean. `python -m mypy src/` → **clean** (file count rises by 1 — readers.py is new).
+- Pre-commit `git status --short`: only `src/evemarket/store/readers.py`, `tests/test_readers.py`, `HANDOFF.md` (the untracked `HANDOFF_ARCHIVE.md` + modified `AGENTS.md` are unrelated planner docs — do NOT stage them); no `data/`/`*.duckdb`/parquet. Commit `feat: DuckDB station-quote reader -> store/readers.py (M8b)`; `git push origin main` (no force). Include `HANDOFF.md`.
 
-**Conventions to mirror:** pure/deterministic (no I/O/global state); reuse `opportunity.py` (no duplicated fee math); explicit full type hints; `from __future__ import annotations`; keyword-only tuning params; raise `ValueError` (not assert); terse docstrings; no new deps (`dataclasses`, `typing`/`collections.abc` stdlib only — use `collections.abc.Iterable`).
+When done: append §8 entry (terse, **INCLUDE the commit hash + what you gathered for the SDE name table**) and STOP. After M8b → **M8c** CLI `scan` command (wire `read_station_quotes` → `scan_station_trades` → formatted table output).
 
-**Boundary** — gather only the To-gather files; write only the in-scope files; do not add DB/CLI yet; do not expand scope. Design change needed → STOP + §9.
-
-**Verification (paste §8, terse per §2):**
-- `python -m pytest -q` (bundled-Python abs path if bare `python` missing) — prior **49 passed, 1 skipped stays green** + new `tests/test_station_trade.py` pass. Cover (pure, no I/O):
-  - **Per-unit economics, zero-skill config** (`Config()` defaults — broker_relations 0/accounting 0/standings 0): a `MarketQuote(type_id=34, type_name="Tritanium", best_bid=100, best_ask=120, daily_volume=1_000_000)` → one `StationTradeResult` with `buy_price==100`, `sell_price==120`, `spread==pytest.approx(20)`, `unit_profit==pytest.approx(4.4)` (107.4 net − 103 cost), `roi==pytest.approx(4.4/103)`. (Mirrors M7's 44/1030 at 1/10 scale — confirms fee reuse.)
-  - **Skip no-market quotes:** `best_bid=0` (or `best_ask=0`) → excluded from results.
-  - **Threshold filters:** with the 4.4-profit item, `min_unit_profit=5` → empty; `min_roi=0.05` (> 0.0427) → empty; `min_daily_volume=2_000_000` → empty; defaults (all 0) → kept.
-  - **Sort + limit:** feed ≥3 quotes with distinct roi; assert output ordered by roi desc (and `limit=2` returns the top 2). Add a roi tie broken by `daily_volume` desc to prove the tiebreak.
-  - **`ValueError`:** `min_roi=-1`, `min_unit_profit=-1`, `min_daily_volume=-1`, `limit=0`.
-  - Use `pytest.approx` for floats. Build `Config()` with no args for the zero-skill case (or set skills/standings explicitly if defaults aren't all-zero — read `config.py` to confirm defaults; if non-zero, pass explicit zeros).
-- `python -m ruff check .` → clean.
-- `python -m mypy src/` → **clean** (`Success: no issues found in … source files`) — gate stays green.
-- NO live run (pure calc).
-- Pre-commit `git status --short`: only `src/evemarket/analytics/station_trade.py`, `tests/test_station_trade.py`, `HANDOFF.md` (the untracked `HANDOFF_ARCHIVE.md` + modified `AGENTS.md` are unrelated planner docs — do NOT stage them); no `data/`/`*.duckdb`/parquet. Commit `feat: pure station-trade ranking core -> analytics/station_trade.py (M8a)`; `git push origin main` (no force). Include `HANDOFF.md`.
-
-When done: append §8 entry (terse, **INCLUDE the commit hash**) and STOP. After M8a → **M8b** `station_trade` DuckDB reader (best bid/ask per type from latest order snapshot + history volume → `MarketQuote` rows; Claude will gather the store schema for that pack) → **M8c** CLI `scan` command.
-
-> Completed task Context Packs (M4a–M7) archived/superseded — load-bearing facts retained in §7 (verdicts) + §8 (logs); full early packs in `HANDOFF_ARCHIVE.md` §A.
+> Completed task Context Packs (M4a–M8a) archived/superseded — load-bearing facts retained in §7 (verdicts) + §8 (logs); full early packs in `HANDOFF_ARCHIVE.md` §A.
 
 ## 7. Planner/Debugger Notes (Claude)
 
@@ -147,6 +159,7 @@ When done: append §8 entry (terse, **INCLUDE the commit hash**) and STOP. After
 - M5-FIX mypy-clean ✅ `f654b2f` (+docs `e7c851e`) — **Phase 1 COMPLETE to standard.**
 - M6 fees ✅ `2cee47b` (+docs `f10b9c5`) — first Phase-2 primitive.
 - M7 opportunity seam ✅ `46261d0` (+docs `18af9c7`) — `ProfitOpportunity`/`Acquisition`/`Disposal`.
+- M8a station-trade ranking core ✅ `29f7a9c` (+docs `281363b`) — pure scan/rank.
 
 **Standing decisions / known non-blockers (carry forward):**
 - **"No new deps" is hard:** if Codex needs one → STOP + §9 for planner sign-off; never silently `pip install` to make tests pass (M3-FIX hidden-pytz trap).
@@ -157,6 +170,8 @@ When done: append §8 entry (terse, **INCLUDE the commit hash**) and STOP. After
 - **Deferred (non-blocking, M0):** switch `Config`/`SkillConfig` `BaseSettings`→`BaseModel` so TOML is sole config source (BaseSettings allows silent env-var overrides). Small future task. (Also tracked §9.)
 
 **Recent verdicts:**
+- **M8a REVIEW: DONE.** `analytics/station_trade.py` + tests match the pack. `MarketQuote`/`StationTradeResult` frozen; `scan_station_trades` skips non-two-sided quotes, builds `station_trade_opportunity` at qty=1 (reuses M7 — no duplicated math), inclusive threshold filters, deterministic sort `(-roi, -daily_volume, type_id)`, validated `min_*>=0`/`limit>=1`. Hand-verified per-unit `4.4 / (4.4·103⁻¹)` (1/10-scale echo of M7) + the sort case `[35,36,37,34]` (35 wins on roi from the 30-spread; 36<37 by type_id tiebreak at equal roi/vol; 34 last on lower vol). Git `29f7a9c` + docs `281363b` pushed, exactly 3 files, no `data/`; §8 `57 passed,1 skip`/ruff/mypy clean. Pure core to-standard → unblocks M8b.
+- **PHASE 3 COMMITTED + M8b drafted.** (a) **Phase 3 added to §5** (long-hold forecasting): user wants month+ predictions; gated on my confidence it can be ≥ net-even — defensible because **abstention is first-class** (only surface a trade with backtested positive expectancy net fees; else recommend nothing / fall back to deterministic edge → downside floor = 0). Encoded success bar: >50% hit rate = floor only; binding gate = expectancy beating naive + buy-&-hold baselines out-of-sample. ML deps deferred to P3 kickoff w/ sign-off. (b) **M8b drafted (§6):** NEW `store/readers.py` (planner-signed-off addition to §4 layout — mirrors `writers.py`; keeps `station_trade.py` pure I/O-free) with `read_station_quotes(config, region_id, station_id, *, volume_window_days=30) -> list[MarketQuote]`. I gathered the full store schema (ORDER_SCHEMA parquet cols: `type_id/is_buy_order/price/location_id/region_id/snapshot_ts`; `market_history` cols; `ingest_runs.snapshot_path`) and pasted the exact query design; delegated only the SDE type-name table lookup to Codex ("To gather" `sde/load.py`). Hermetic tmp-fixture tests (no live data/network). Review focus on return: latest-snapshot resolution via `ingest_runs`, `MAX(price)FILTER(is_buy_order)`/`MIN(price)FILTER(NOT is_buy_order)` best bid/ask at station, NULL→0 one-sided drop, trailing-window avg volume, SDE name join + fallback, returns `MarketQuote` list feeding M8a, no new deps, mypy/ruff clean, commit hash §8.
 - **M7 REVIEW: DONE.** `analytics/opportunity.py` + `tests/test_opportunity.py` match the pack exactly. The abstract-property gotcha was handled right: `quantity` is a plain annotation on both ABCs, only `total_cost`/`net_proceeds` abstract → concrete frozen dataclasses instantiate (49 tests construct them). Legs reuse M6 `broker_fee`/`sales_tax` (no duplicated formulas); `MarketBuy.total_cost = gross+broker`, `MarketSell.net_proceeds = gross−broker−tax`; `ProfitOpportunity` has quantity-match validation + `cost`/`revenue`/`profit`/`roi`(cost≤0 guard)/`quantity`; factory mirrors M6 config delegate. Verified math: zero-skill `1030/1074/44`, `roi=44/1030`; invariant `profit = spread − station_trade_fees.total` (=137.5 at BR5/acc5/f10/c10); factory floor case `1010/1147.5/137.5`; all 4 `ValueError` paths. Git: `46261d0` + docs `18af9c7` on `main`, pushed; commit touched exactly the 3 intended files, no `data/`. §8 verification (`49 passed, 1 skipped` / ruff clean / mypy 23 files clean) matches. **Codex's first run as bounded gatherer under the new workflow — read `fees.py`/`config.py`/the stub itself, stayed in scope, logged what it read (§8). Workflow change validated.** Seam to-standard → unblocks M8.
 - **M8 decomposed; M8a drafted (Context Pack).** First scanner split into **M8a pure ranking core → M8b DuckDB reader → M8c CLI** (one-step-at-a-time; mirrors Phase-1's M4a/b, M5a/b/c). M8a is fully self-contained: *we define the input row shape* (`MarketQuote`: type_id/type_name/best_bid/best_ask/daily_volume), so it has **zero dependency on the store schema** — that's why it can be packed precisely now without me gathering DB internals (those I'll gather for M8b). Design: `MarketQuote` + `StationTradeResult` (flat, CLI-ready) frozen dataclasses + `scan_station_trades(quotes, config, *, min_roi, min_unit_profit, min_daily_volume, limit)` — skip non-two-sided quotes (`best_bid/ask<=0`), build `station_trade_opportunity(...)` at **quantity=1** (fees pure-%, so roi/unit-profit scale-invariant; ISK/day projection w/ capture-rate assumption deferred to keep it honest per §3), filter on thresholds, sort roi desc → volume desc → type_id asc (deterministic), optional limit. Reuses M7 (no duplicated math). Review focus on return: per-unit numbers (4.4 / 4.4/103, the 1/10-scale echo of M7), no-market skip, threshold filters, deterministic sort+limit+tiebreak, `ValueError` on negative thresholds/`limit=0`, pure (no I/O/DB/CLI), no new deps, only the 2 files+HANDOFF touched, mypy/ruff clean, commit hash in §8.
 - **M6 REVIEW: DONE.** `analytics/fees.py` + `tests/test_fees.py` match the pack exactly. Verified every formula/constant by hand: broker rate floor `BR5+f10+c10 → 0.01` exactly (holds, not below); negative faction `−10 → 0.033 > 0.03`; `sales_tax_rate(5)=0.03375`; `station_trade_fees(100,120,10)=30/36/90/156`; `from_config` floor case `=10/12/40.5/62.5`. Pure (no I/O), `ValueError` on bad input, `TradeFees` frozen, named constants, no new deps; bonus `bool`-rejection on int params (correct). Git: `2cee47b` + docs `f10b9c5` on `main`, pushed, no `data/` staged; §8 verification (`45 passed, 1 skipped` / ruff clean / mypy 23 files clean) matches. Fee primitive is to-standard → unblocks M7.
@@ -211,6 +226,22 @@ _(Append new entries below — next: M8a.)_
 - Deviations: used bundled Python abs path; bare `python` known unavailable. No live run; pure calc. Did not touch/stage unrelated `AGENTS.md` or `HANDOFF_ARCHIVE.md`.
 - Questions: none.
 - Commit: `29f7a9c`.
+
+### M8b — DuckDB station-quote reader — 2026-06-28 — COMPLETE
+- Files: `src/evemarket/store/readers.py`, `tests/test_readers.py`, `HANDOFF.md`.
+- Gathered/read: `src/evemarket/sde/load.py` (`sde_types(type_id,type_name)`, SDE path `config.data_dir/sde.duckdb`); `src/evemarket/store/writers.py` (`write_orders_snapshot`, `ORDER_SCHEMA`, `record_ingest_run`); `src/evemarket/store/schema.py` (`ensure_market_db`, `ingest_runs`, `market_history`); `src/evemarket/analytics/station_trade.py` (`MarketQuote`); `src/evemarket/config.py` (`Config.data_dir`).
+- Commands+result:
+  - `C:\Users\M0obo\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe -m pytest -q --basetemp .pytest-tmp` → FAIL: DuckDB `ATTACH ? AS ...` parser rejects parameter placeholder.
+  - `C:\Users\M0obo\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe -m ruff check .` → `All checks passed!`
+  - `C:\Users\M0obo\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe -m mypy src/` → `Success: no issues found in 24 source files`
+  - `C:\Users\M0obo\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe -m pytest -q --basetemp .pytest-tmp` → `62 passed, 1 skipped, 1 warning` (pytest cache WinError 5 only).
+  - `C:\Users\M0obo\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe -m ruff check .` → `All checks passed!`
+  - `C:\Users\M0obo\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe -m mypy src/` → `Success: no issues found in 24 source files`
+  - `git status --short` → scoped files + user-requested modified `AGENTS.md` + unrelated untracked `HANDOFF_ARCHIVE.md`; no `data/`/duckdb/parquet.
+- Verification: PASS; latest snapshot, station filter, one-sided NULL→0, trailing avg volume, SDE name lookup + fallback, no snapshot, scanner feed, bad volume window covered.
+- Deviations: DuckDB `ATTACH` does not accept query params; used escaped DuckDB string literal for SDE path only, normal query values remain parameterized. No live run; hermetic tmp fixtures only. `AGENTS.md` committed separately per user request.
+- Questions: none.
+- Commit: pending.
 
 ## 9. Open Questions / Blockers
 
