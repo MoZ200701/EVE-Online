@@ -210,7 +210,7 @@ _(Append new entries below — next: M8a.)_
 - Verification: PASS; per-unit economics, no-market skip, threshold filters, deterministic sort+limit+tiebreak, ValueError cases covered.
 - Deviations: used bundled Python abs path; bare `python` known unavailable. No live run; pure calc. Did not touch/stage unrelated `AGENTS.md` or `HANDOFF_ARCHIVE.md`.
 - Questions: none.
-- Commit: pending.
+- Commit: `29f7a9c`.
 
 ## 9. Open Questions / Blockers
 
