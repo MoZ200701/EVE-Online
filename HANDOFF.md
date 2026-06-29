@@ -64,7 +64,7 @@ src/evemarket/: __init__.py  config.py  cli.py
   sde/{__init__,load}.py
   ingest/{__init__,orders,history,prices,backfill}.py
   store/{__init__,schema,writers,quality,readers}.py   # readers.py added M8b (planner sign-off 2026-06-28)
-  analytics/{__init__,fees,opportunity,station_trade,haul,backtest}.py   # backtest.py added P3-0a (planner sign-off 2026-06-29, pure leaf module)
+  analytics/{__init__,fees,opportunity,station_trade,haul,backtest,walkforward}.py   # backtest.py (P3-0a, pure leaf) + walkforward.py (P3-0c engine — planner sign-off 2026-06-29; imports backtest+opportunity+Config, keeps backtest.py pure)
   ui/{__init__,app}.py   # streamlit dashboard, added M10 (planner sign-off 2026-06-29, optional [ui] extra)
 tests/
 ```
@@ -73,7 +73,7 @@ tests/
 
 **Phase 1 — data pipeline**
 - M0 Scaffold ✅ | M1 SDE→`sde.duckdb` ✅ | REPO git+push ✅ | M2 ESI client ✅ | M3 Order snapshots + `ingest_runs` ✅ | M4a ESI daily history → `market_history` ✅ | M4b everef.net bulk backfill ✅ | M5a ESI prices → `market_prices` ✅
-- **M5** Prices ✅ | scheduler (M5b) ✅ | data-quality (M5c) ✅ | M5-FIX mypy-clean ✅ — **Phase 1 COMPLETE & to-standard.** | M6 `analytics/fees.py` ✅ `2cee47b` | M7 `analytics/opportunity.py` seam ✅ `46261d0` | M8a `station_trade.py` ranking core ✅ `29f7a9c` | M8b `store/readers.py` DuckDB reader ✅ `55d5a3e` | M8c CLI `scan` ✅ `0bf9a99`. M9 `analytics/haul.py` regional arbitrage — M9a pure core ✅ `ab937a9` → M9b cross-region reader ✅ `81148ea` → M9c CLI `haul` ✅ `c8bae2d`. **Phase-2 scanners (station-trade + haul) COMPLETE end-to-end.** M10 Streamlit dashboard — M10a skeleton+station panel ✅ `788d295` → M10b haul panel ✅ `96d74da`. **M10 COMPLETE (both scanners in one browser view).** ← **CURRENT/NEXT: Phase 3 (P3-0 backtest harness) — needs planner scoping + ML-dep sign-off; NOT started.**
+- **M5** Prices ✅ | scheduler (M5b) ✅ | data-quality (M5c) ✅ | M5-FIX mypy-clean ✅ — **Phase 1 COMPLETE & to-standard.** | M6 `analytics/fees.py` ✅ `2cee47b` | M7 `analytics/opportunity.py` seam ✅ `46261d0` | M8a `station_trade.py` ranking core ✅ `29f7a9c` | M8b `store/readers.py` DuckDB reader ✅ `55d5a3e` | M8c CLI `scan` ✅ `0bf9a99`. M9 `analytics/haul.py` regional arbitrage — M9a pure core ✅ `ab937a9` → M9b cross-region reader ✅ `81148ea` → M9c CLI `haul` ✅ `c8bae2d`. **Phase-2 scanners (station-trade + haul) COMPLETE end-to-end.** M10 Streamlit dashboard — M10a skeleton+station panel ✅ `788d295` → M10b haul panel ✅ `96d74da`. **M10 COMPLETE (both scanners in one browser view).** Phase 3 STARTED: P3-0a pure metrics ✅ `9e32b68`. ← **CURRENT: P3-0b (PIT price series + pure baseline forecasters in `analytics/backtest.py`) — scoped & active in §6.** (P3-0 needs NO new deps; ML-dep sign-off is a separate P3-2 gate.)
 
 **Phase 2 — deterministic analytics (stubbed):** `fees.py` ✅, `opportunity.py` ✅, `station_trade.py` (first scanner — **decomposed: M8a pure ranking ✅ → M8b DuckDB reader ✅ → M8c CLI ✅**), then `haul.py` (**decomposed: M9a pure core ✅ → M9b cross-region reader → M9c CLI `haul`**).
 
@@ -81,7 +81,7 @@ tests/
 
 **Phase 3 — forecasting & long-hold (position) trading** *(committed 2026-06-28; honest-backtest-first; starts only after Phase 2 scanners land — no jumping ahead).*
 Goal: predict forward price/return over a **multi-week horizon** (target ~2–6 wks, configurable — covers "buy and hold a month+") and surface backtested long-hold suggestions via the existing `ProfitOpportunity` seam (a hold = a `Disposal` at a *predicted future* price). Trained **locally** on EVE history (GBM / time-series per §3), NOT LLM.
-- **P3-0 Backtest harness FIRST (the gate):** walk-forward, strict out-of-sample, point-in-time (no lookahead/survivorship), realistic fills + reuse M6 fees. Baselines = naive persistence, seasonal-naive, buy-&-hold item, hold-ISK. Metrics: directional hit rate, **risk-adjusted expectancy (ISK/trade net fees)**, profit factor, max drawdown, return vs each baseline, sample size/significance. Nothing downstream is trusted until this exists. **Decomposed (2026-06-29): P3-0a pure metrics `analytics/backtest.py` (active) → P3-0b PIT series + baselines + walk-forward engine → P3-0c `market_history` reader + `backtest` CLI. NO new deps in P3-0 (existing stack + M6 fees); ML-dep sign-off is a separate P3-2 gate.**
+- **P3-0 Backtest harness FIRST (the gate):** walk-forward, strict out-of-sample, point-in-time (no lookahead/survivorship), realistic fills + reuse M6 fees. Baselines = naive persistence, seasonal-naive, buy-&-hold item, hold-ISK. Metrics: directional hit rate, **risk-adjusted expectancy (ISK/trade net fees)**, profit factor, max drawdown, return vs each baseline, sample size/significance. Nothing downstream is trusted until this exists. **Decomposed (2026-06-29; remainder re-split 2026-06-29 — pure-core-first discipline): P3-0a pure metrics `analytics/backtest.py` ✅ `9e32b68` → P3-0b PIT price series + pure baseline forecasters [naive persistence, seasonal-naive] in `backtest.py` ✅ (commit pending) → P3-0c walk-forward engine `analytics/walkforward.py` (decision rule + reference-price fills + M6-fee reuse via `station_trade_opportunity` → `TradeOutcome`s scored by `compute_metrics`; + `buy_and_hold_outcomes`) [active] → P3-0d `market_history` reader (→ `PricePoint` series) + `backtest` CLI + baseline comparison report (naive/seasonal/buy-&-hold vs the hold-ISK=0 reference, per §5 "beat the baselines"). NO new deps in P3-0 (existing stack + M6 fees); ML-dep sign-off is a separate P3-2 gate.**
 - **P3-1 Feature pipeline:** point-in-time features (returns, realized vol, volume/liquidity trends, rolling stats, calendar/seasonality, spread). Zero future leakage.
 - **P3-2 Forecast model:** horizon-return forecaster with probability/confidence; trained + persisted locally.
 - **P3-3 Position-trade scanner:** forecasts → ranked long-hold opportunities (future-priced `Disposal`), gated by backtested edge + confidence, shown WITH downside/uncertainty.
@@ -96,9 +96,133 @@ Goal: predict forward price/return over a **multi-week horizon** (target ~2–6 
 
 Definition of done is per-step in each task prompt.
 
-## 6. Current Task (Codex) — ▶ P3-0a ACTIVE
+## 6. Current Task (Codex) — ▶ P3-0c ACTIVE (after finalizing P3-0b)
 
-**STATUS: M10 COMPLETE (`96d74da`). Phase 3 has begun. P3-0 (backtest harness — the GATE, §5) is decomposed: P3-0a pure metrics primitives → P3-0b PIT series + baselines + walk-forward engine → P3-0c history reader + `backtest` CLI. EXECUTE the P3-0a pack directly below. The `<details>` packs (M10b/M9c/M9b/M8c) are FINISHED references — do NOT execute them. NOTE: P3-0 uses NO new deps (existing stack + M6 fees); ML-dep sign-off is a SEPARATE gate at P3-2 — do NOT add any ML/stats library here.**
+**STATUS: P3-0b reviewed DONE (§7) — code to-standard (119 passed/1 skipped, ruff+mypy clean, 27 files) but Codex left the commit PENDING. DO IN ORDER: (Step 0) finalize P3-0b — commit the already-reviewed working-tree files + push + record the hash; (Step 1) execute the P3-0c pack below (walk-forward engine — the FIRST fee-coupled P3 piece). TWO SEPARATE commits. The `<details>` packs below (P3-0b/P3-0a/M10b/M9c/M9b/M8c) are FINISHED references — do NOT re-execute them. (Reminder: P3-0 needs NO new deps; ML-dep sign-off is a separate P3-2 gate.)**
+
+### Step 0 — finalize P3-0b (mechanical, do FIRST, its own commit)
+
+The P3-0b working-tree changes (`src/evemarket/analytics/backtest.py`, `tests/test_backtest.py`, `HANDOFF.md` §8) are reviewed DONE and must NOT be modified. Stage exactly those 3 files (NOT `HANDOFF_ARCHIVE.md` / `.pytest-tmp*/`), commit `feat: PIT price series + baseline forecasters (P3-0b)`, `git push origin main` (no force). Then edit the P3-0b §8 entry's `Commit: pending.` line to the real short hash. If the push fails → STOP + §9. Otherwise proceed to Step 1 as a fresh, fully separate commit.
+
+### Step 1 — P3-0c — walk-forward backtest engine (`analytics/walkforward.py`)
+
+The GATE's engine: turns a point-in-time `PricePoint` series + a forecaster into the chronological `TradeOutcome`s that `compute_metrics` scores (§5 success bar). This is the FIRST P3 piece that couples to fees — so it lives in a NEW module `walkforward.py` (planner §4 sign-off), keeping `backtest.py` a pure leaf. **All fee math is REUSED from M6/M7 via `station_trade_opportunity(...).profit` — ZERO duplicated fee formulas** (same discipline as M9a's haul scanner). Point-in-time discipline is load-bearing: the forecast at decision-time `t` may see ONLY `series[:t+1]`; the realized price is `series[t+horizon]`. **No new deps** (stdlib + existing M6/M7/P3-0a/b).
+
+**New-workflow note:** read the **To gather** files for exact signatures + the M9a "build ONE opportunity, read `.profit`" reuse pattern; write only the files in scope. P3-0b's 119 tests + P3-0a code stay green/untouched. Anything that changes this design → STOP + §9.
+
+### CONTEXT PACK
+
+**Files in scope (write only these):**
+- CREATE `src/evemarket/analytics/walkforward.py` — the engine (a `Forecaster` Protocol + `run_forecaster_backtest` + `buy_and_hold_outcomes`).
+- CREATE `tests/test_walkforward.py`.
+- EDIT `HANDOFF.md` §8 (log).
+- Do NOT touch `backtest.py`, `opportunity.py`, `fees.py`, `config.py`, any reader/CLI, or anything else.
+
+**To gather (read yourself — do not edit):**
+- `src/evemarket/analytics/backtest.py` — confirm the exact field names/types you'll import: `PricePoint(date, price)`, `Forecast(predicted_price, direction)`, `TradeOutcome(net_isk, correct_direction)`, `compute_metrics`, and the two forecasters `naive_persistence_forecast` / `seasonal_naive_forecast` (for tests).
+- `src/evemarket/analytics/haul.py` — mirror the M9a reuse idiom EXACTLY: build ONE `station_trade_opportunity(...)` and read `.profit` (no re-deriving fees), plus the frozen-dataclass / keyword-only-after-`*` / `ValueError` conventions.
+- `src/evemarket/analytics/opportunity.py` — `station_trade_opportunity` signature (pasted below; confirm).
+
+**Caller contracts (paste — trust these):**
+- `station_trade_opportunity(config: Config, buy_price: float, sell_price: float, quantity: int) -> ProfitOpportunity` — `.profit` = net ISK after broker fee (both legs) + sales tax (sell leg), using `config` skills/standings. Raises `ValueError` if `price < 0` or `quantity < 1`.
+- `TradeOutcome(net_isk: float, correct_direction: bool)` — frozen (P3-0a); chronological order matters (drawdown).
+- `Forecast(predicted_price: float, direction: int)` — frozen (P3-0b); `direction` is `+1`/`0`/`-1`.
+- `PricePoint(date: str, price: float)` — frozen (P3-0b); a series is a **chronological** `Sequence[PricePoint]` (callers guarantee order; this module does NOT sort).
+- `Config()` — usable with defaults (zero skills/standings); passed straight to `station_trade_opportunity`.
+
+**Deliverable — `src/evemarket/analytics/walkforward.py`:**
+- `class Forecaster(Protocol)` (`from typing import Protocol`): `def __call__(self, series: Sequence[PricePoint], *, horizon: int) -> Forecast: ...` — the engine owns `horizon` and passes it as a keyword. `naive_persistence_forecast` matches directly; bind `seasonal_naive_forecast`'s `season_length` with a tiny named wrapper (NOT `functools.partial` — avoids the Protocol-vs-partial mypy snag), e.g. in tests `def seasonal(s, *, horizon): return seasonal_naive_forecast(s, horizon=horizon, season_length=7)`.
+- `run_forecaster_backtest(series: Sequence[PricePoint], forecaster: Forecaster, config: Config, *, horizon: int, warmup: int) -> list[TradeOutcome]`:
+  - `ValueError` if `horizon < 1` or `warmup < 1`.
+  - Eligible decision indices: `t in range(warmup - 1, len(series) - horizon)` (lower bound → history length ≥ `warmup`; upper bound → realized index `t + horizon ≤ len-1`). If the range is empty → `return []` (honest "no eligible windows", NOT an error).
+  - For each `t`:
+    - `history = series[: t + 1]` (point-in-time — never includes `t+1…`); `forecast = forecaster(history, horizon=horizon)`.
+    - **Decision rule (long-only, abstention first-class):** `predicted_profit = station_trade_opportunity(config, buy_price=series[t].price, sell_price=forecast.predicted_price, quantity=1).profit`. If `predicted_profit <= 0` → **abstain** (emit NO outcome; `continue`). (A predicted rise that doesn't clear round-trip fees is not a trade — this is why naive-persistence, predicting flat, never trades and degenerates to the do-nothing floor.)
+    - `realized_price = series[t + horizon].price`; `net_isk = station_trade_opportunity(config, buy_price=series[t].price, sell_price=realized_price, quantity=1).profit` (the REALIZED, fee-net outcome).
+    - `realized_delta = realized_price - series[t].price`; `realized_direction = (realized_delta > 0) - (realized_delta < 0)` (stdlib sign → `1`/`0`/`-1`, NO private import); `correct_direction = realized_direction == forecast.direction`.
+    - Append `TradeOutcome(net_isk=net_isk, correct_direction=correct_direction)`.
+  - Return the chronological list (callers pass it straight to `compute_metrics`).
+- `buy_and_hold_outcomes(series: Sequence[PricePoint], config: Config) -> list[TradeOutcome]`:
+  - `if len(series) < 2: return []`.
+  - One round-trip: `opp = station_trade_opportunity(config, buy_price=series[0].price, sell_price=series[-1].price, quantity=1)`; `correct_direction = series[-1].price > series[0].price` (buy-&-hold is an unconditional long bet). Return `[TradeOutcome(net_isk=opp.profit, correct_direction=correct_direction)]`.
+
+**Conventions to mirror:** full type hints; `Sequence` from `collections.abc`, `Protocol` from `typing`; keyword-only args after `*`; `ValueError` validation in the M9a style; reuse `station_trade_opportunity` for ALL fee math (NO duplicated formulas); quantity fixed at `1` (per-unit ISK — sizing is a P3-3 concern); `from __future__ import annotations`; terse; **no new deps**.
+
+**Boundary** — create only the 2 files (+ §8). NO reader, NO CLI, NO new forecasters, NO `hold_isk` function (hold-ISK is the trivial `0.0` reference — it belongs to P3-0d's comparison report, NOT here; representing it as an empty outcome list would conflate "no return" with "abstention/no data"). NO quantity/capital sizing, NO slippage / order-book-depth fills (daily history has no book — reference-price + M6 fees is the honest model per §3; depth-aware fills are out of scope). NO ML. Do NOT modify `backtest.py`/`opportunity.py`. Anything that changes this design → STOP + §9.
+
+**Verification (paste §8, terse per §2) — tests are PURE (hand-built `PricePoint` lists + real `Config()`, NO network/DB/fixtures):**
+- **Fee-accuracy / no-duplicated-math (the key cross-check):** with a tiny always-bullish stub forecaster (`def bullish(s, *, horizon): return Forecast(predicted_price=s[-1].price * 2, direction=1)`) over a strictly increasing series, assert every emitted `net_isk == station_trade_opportunity(Config(), series[t].price, series[t+horizon].price, 1).profit` (recomputed independently) — proves the engine adds no fee math of its own.
+- **Point-in-time / windowing:** assert the number of outcomes (when the stub always trades) equals `len(range(warmup-1, len(series)-horizon))`; pick `warmup`/`horizon` so the first decision uses exactly `warmup` history points and the last realized index is `len-1`.
+- **Decision-rule abstention:** `run_forecaster_backtest(series, naive_persistence_forecast, Config(), horizon=…, warmup=…)` → `[]` (flat prediction never clears fees) → `compute_metrics([]).sample_size == 0`.
+- **`correct_direction`:** a stub predicting `direction=1` on a step whose realized price FALLS → outcome `correct_direction is False`; a rising step → `True`. (Also confirm a taken trade on a realized rise has `net_isk > 0` and a realized fall has `net_isk < 0`.)
+- **Bounds / errors:** `horizon=0` and `warmup=0` each `pytest.raises(ValueError)`; a series too short for any window (e.g. `len <= warmup + horizon - 1`) → `[]`.
+- **Seasonal forecaster end-to-end:** via the `seasonal` wrapper above over a seasonal series → produces ≥1 outcome; feed to `compute_metrics` → finite scorecard.
+- **`buy_and_hold_outcomes`:** increasing series → exactly one outcome, `net_isk == station_trade_opportunity(Config(), first, last, 1).profit`, `correct_direction is True`; decreasing series → `correct_direction is False`; `len < 2` → `[]`.
+- `python -m pytest -q` (bundled-Python abs path `C:\Users\M0obo\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe`; AppData temp denied → `--basetemp` at a FRESH dir, e.g. `.pytest-tmp-p30c`). Prior **119 passed, 1 skipped** stays green + new walkforward tests pass.
+- `python -m ruff check .` → clean. `python -m mypy src/` → clean (**now 28 source files** — `walkforward.py` added).
+- Pre-commit `git status --short`: only `src/evemarket/analytics/walkforward.py`, `tests/test_walkforward.py`, `HANDOFF.md` (untracked `HANDOFF_ARCHIVE.md` + `.pytest-tmp*/` unrelated — do NOT stage); no `data/`/`*.duckdb`/parquet. Commit `feat: walk-forward backtest engine (P3-0c)`; `git push origin main` (no force). Include `HANDOFF.md`.
+
+When done: append §8 entry (terse, **INCLUDE the commit hash + the M9a reuse idiom you mirrored**) and STOP. After P3-0c → **P3-0d**: a `market_history` reader that builds a chronological `PricePoint` series from the store (mirrors `store/readers.py`) + a `backtest` Typer CLI + the baseline-comparison report (run naive-persistence, seasonal-naive, buy-&-hold through the engine and tabulate each one's `compute_metrics` expectancy vs the hold-ISK `0.0` reference — the §5 "beat the baselines out-of-sample" verdict). That closes the P3-0 gate.
+
+<details><summary>Completed — P3-0b: PIT price series + pure baseline forecasters (reference)</summary>
+
+### P3-0b — PIT price series + pure baseline forecasters (`analytics/backtest.py`)
+
+The forecasting *baseline* layer of the backtest gate — the "what does a dumb model predict?" floor that any real P3-2 forecaster must beat (§5 success bar). EXTEND the existing pure `backtest.py` with (a) the point-in-time price-series input shape and (b) the two genuine baseline **forecasters** (naive persistence, seasonal-naive). These are price predictors; the *benchmark policies* buy-&-hold-item and hold-ISK are NOT forecasters (they're return streams the engine emits) and land in P3-0c with the walk-forward engine. **Pure, self-contained, stdlib only (`math`), zero I/O / no fees / no engine / no `evemarket` imports** — same leaf discipline as P3-0a/M8a/M9a: *we define the input shape* (a chronological `PricePoint` series) so this stays fully unit-testable with hand-computed series and has ZERO store/M6/Config coupling. **No new deps.**
+
+**New-workflow note:** read the **To gather** files for the frozen-dataclass + `ValueError`-validation idiom to mirror; APPEND to `backtest.py` (don't disturb the P3-0a metrics) and EXTEND `tests/test_backtest.py` (the 11 existing tests stay green). Anything that changes this design → STOP + §9.
+
+### CONTEXT PACK
+
+**Files in scope (write only these):**
+- EDIT `src/evemarket/analytics/backtest.py` — APPEND the new dataclasses + forecaster functions BELOW the existing P3-0a code. Do NOT alter `TradeOutcome`, `BacktestMetrics`, the metric functions, `compute_metrics`, or `_require_outcomes`. Reuse the file's existing `from __future__ import annotations`, `from collections.abc import Sequence`, and dataclass import; ADD `from math import ceil` to the existing `from math import sqrt` line.
+- EDIT `tests/test_backtest.py` — ADD forecaster/series tests; keep the 11 existing metric tests UNCHANGED and green.
+- EDIT `HANDOFF.md` §8 (log).
+- Do NOT touch any other file (no reader, no CLI, no fees, no config, no walk-forward engine yet).
+
+**To gather (read yourself — do not edit):**
+- `src/evemarket/analytics/backtest.py` — the P3-0a code you're extending: mirror its exact idiom (`@dataclass(frozen=True)` with a one-line docstring, the `_require_outcomes`-style `ValueError` guard, terse pure functions over a `Sequence`). Append cohesively in the same style.
+- `src/evemarket/analytics/station_trade.py` / `haul.py` — second examples of the keyword-only-args-after-`*` + `ValueError` convention if useful.
+
+**Caller contracts:** none — still a pure leaf (stdlib only). Does NOT import `Config`, fees, readers, or anything from `evemarket`.
+
+**Deliverable — append to `src/evemarket/analytics/backtest.py`:**
+- `@dataclass(frozen=True) class PricePoint` — one point of a point-in-time daily price series:
+  - `date: str` — ISO `YYYY-MM-DD` (mirrors `market_history.date`; ordering field).
+  - `price: float` — the per-day reference price the forecaster predicts (which ESI column maps here — `average` vs close — is decided by P3-0d's reader, NOT now).
+  - (A series is a **chronological** `Sequence[PricePoint]`, ascending `date`; callers guarantee order — this module does NOT sort. Forecasters read only `.price`.)
+- `@dataclass(frozen=True) class Forecast` — one forecaster's prediction for a future point:
+  - `predicted_price: float` — the predicted reference price at the target horizon.
+  - `direction: int` — predicted move vs the last observed price: `+1` up / `0` flat / `-1` down, i.e. `_sign(predicted_price - series[-1].price)`.
+- `naive_persistence_forecast(series: Sequence[PricePoint], *, horizon: int) -> Forecast`:
+  - `ValueError` if `series` is empty OR `horizon < 1`.
+  - `predicted_price = series[-1].price`; `direction = 0` (persistence predicts no change — the deliberately edge-less floor; `horizon` is accepted for interface uniformity but unused).
+- `seasonal_naive_forecast(series: Sequence[PricePoint], *, horizon: int, season_length: int) -> Forecast`:
+  - `ValueError` if `series` empty OR `horizon < 1` OR `season_length < 1`.
+  - Standard seasonal-naive index: `n = len(series)`; `idx = (n - 1) + horizon - season_length * ceil(horizon / season_length)`. If `idx < 0` → `ValueError` ("series too short for seasonal_naive at this horizon/season_length" — fewer than one full season before the target).
+  - `predicted_price = series[idx].price`; `direction = _sign(predicted_price - series[-1].price)`.
+- `_sign(delta: float) -> int` — private helper: `+1` if `delta > 0`, `-1` if `delta < 0`, else `0`.
+
+**Conventions to mirror:** frozen dataclasses w/ one-line docstrings; full type hints; `Sequence` from `collections.abc`; keyword-only args after `*`; `ValueError` validation in the P3-0a style; pure (no I/O, no `evemarket` imports, no `Config`/fees/readers); stdlib `math` only; **no new deps**; terse.
+
+**Boundary** — append only to the 2 files (+ §8). NO walk-forward engine, NO realistic fills, NO M6 fees, NO benchmark policies (buy-&-hold-item / hold-ISK — those are *return streams* the P3-0c engine emits, NOT forecasters), NO reader, NO CLI, NO `TradeOutcome` wiring. Do NOT modify the P3-0a code or import `Config`/fees/readers. Anything that changes this design → STOP + §9.
+
+**Verification (paste §8, terse per §2) — tests are PURE (hand-computed expected values, NO fixtures/network):**
+- Build a hand-worked series, e.g. prices `[10,11,12,13,14,15,16,17,18,19]` (10 points, dummy ascending dates):
+  - **naive_persistence:** `predicted_price == 19.0`; `direction == 0`; result identical for `horizon=1` and `horizon=30` (horizon ignored).
+  - **seasonal_naive, `season_length=7`:** `horizon=1` → `idx = 9 + 1 - 7 = 3` → `predicted_price == 13.0`, `direction == -1` (13 < 19). `horizon=7` → `idx = 9` → `predicted_price == 19.0`, `direction == 0`. `horizon=8` → `idx = 9 + 8 - 14 = 3` → `predicted_price == 13.0`.
+  - Add an **up-direction** seasonal case (a series where the seasonal source price > last → `direction == +1`) and a **flat** case (seasonal source == last → `0`).
+- Edge cases (each `pytest.raises(ValueError)`): empty series for BOTH forecasters; `horizon=0`; `seasonal_naive` `season_length=0`; `seasonal_naive` too-short series (e.g. 5 points, `season_length=7`, `horizon=1` → `idx=-2`).
+- `_sign` is exercised indirectly via the direction assertions (don't need a separate import-of-private test, but you may).
+- `python -m pytest -q` (bundled-Python abs path `C:\Users\M0obo\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe`; AppData temp denied → `--basetemp` at a FRESH dir, e.g. `.pytest-tmp-p30b`). Prior **108 passed, 1 skipped** stays green + new forecaster tests pass.
+- `python -m ruff check .` → clean. `python -m mypy src/` → clean (**still 27 source files** — only `backtest.py` edited, no new module).
+- Pre-commit `git status --short`: only `src/evemarket/analytics/backtest.py`, `tests/test_backtest.py`, `HANDOFF.md` (untracked `HANDOFF_ARCHIVE.md` + `.pytest-tmp*/` are unrelated — do NOT stage them); no `data/`/`*.duckdb`/parquet. Commit `feat: PIT price series + baseline forecasters (P3-0b)`; `git push origin main` (no force). Include `HANDOFF.md`.
+
+When done: append §8 entry (terse, **INCLUDE the commit hash + the P3-0a idiom you appended to**) and STOP. After P3-0b → **P3-0c**: the walk-forward engine — slides a window over a `PricePoint` series, at each step calls a forecaster, applies the decision rule (go long only when predicted gain clears round-trip M6 fees, else abstain), simulates a realistic fill, fee-adjusts via M6, emits a chronological `Sequence[TradeOutcome]` scored by `compute_metrics`; ADDS the benchmark policies buy-&-hold-item + hold-ISK as their own outcome streams for the §5 "beat the baselines" comparison.
+
+</details>
+
+<details><summary>Completed — P3-0a: pure backtest metrics primitives (reference)</summary>
 
 ### P3-0a — pure backtest metrics primitives (`analytics/backtest.py`)
 
@@ -155,6 +279,8 @@ The measurement/scoring layer for all of Phase 3 — the literal definition of t
 - Pre-commit `git status --short`: only `src/evemarket/analytics/backtest.py`, `tests/test_backtest.py`, `HANDOFF.md` (untracked `HANDOFF_ARCHIVE.md` + `.pytest-tmp*/` are unrelated — do NOT stage them); no `data/`/`*.duckdb`/parquet. Commit `feat: pure backtest metrics primitives (P3-0a)`; `git push origin main` (no force). Include `HANDOFF.md`.
 
 When done: append §8 entry (terse, **INCLUDE the commit hash + the module idiom you mirrored from `station_trade.py`**) and STOP. After P3-0a → **P3-0b** (PIT history series shape + baseline forecasters [naive persistence, seasonal-naive, buy-&-hold item, hold-ISK] + walk-forward engine that produces `TradeOutcome`s using realistic fills + M6 fees, scored via `compute_metrics`).
+
+</details>
 
 <details><summary>Completed — M10b: haul panel in the Streamlit dashboard (reference)</summary>
 
@@ -448,6 +574,9 @@ When done: append §8 entry (terse, **INCLUDE the commit hash + what you gathere
 - **Deferred (non-blocking, M0):** switch `Config`/`SkillConfig` `BaseSettings`→`BaseModel` so TOML is sole config source (BaseSettings allows silent env-var overrides). Small future task. (Also tracked §9.)
 
 **Recent verdicts:**
+- **P3-0b REVIEW: DONE (pre-commit) — baseline forecasters to-standard.** `analytics/backtest.py` (appended) + `tests/test_backtest.py` (extended) match the pack. Reviewer re-ran locally (fresh `--basetemp`) → **119 passed, 1 skipped** (prior 108 + 11 new), ruff clean, mypy clean (**27** files — only `backtest.py` edited, no new module). Verified PURE leaf preserved: only `math.ceil` added to imports, NO `evemarket`/`Config`/fees/reader imports; P3-0a code (`TradeOutcome`/`BacktestMetrics`/metrics/`compute_metrics`/`_require_outcomes`) untouched. `PricePoint{date:str, price:float}` + `Forecast{predicted_price:float, direction:int}` frozen; `naive_persistence_forecast` → last price, `direction 0` (edge-less floor, horizon ignored); `seasonal_naive_forecast` uses `idx=(n-1)+h−m·ceil(h/m)`, `ValueError` when `idx<0`; `_sign` private (+1/0/−1); both forecasters `ValueError` on empty/`horizon<1` (+ `season_length<1`) via `_require_price_series`. Hand-computed tests verified by reviewer: series `[10,20,…,70]` m=7 → h1→idx0=10/dir−1, h7→idx6=70/dir0, h8→idx0=10/dir−1; up/flat direction case (`[100,125,100]` m=2 → h1 idx1=125/+1, h2 idx2=100/0); all 6 `ValueError` edges. **Deviation (correct, honestly logged):** Codex's first seasonal test expected full-season horizons to move *down*; the formula maps a full-season horizon to the last observed point (dir 0) — Codex fixed the **test to match the spec** (test→spec, the right direction), then green. **Loose end:** Codex left `Commit: pending` (same stop-before-commit as M9c) — folded into the next §6 prompt as a mechanical Step 0. Code is to-standard → unblocks P3-0c.
+- **P3-0b drafted (Context Pack) — P3-0 remainder re-decomposed.** The original plan lumped "P3-0b = PIT series + baselines + walk-forward engine" — three concerns in one step, against the religiously-followed pure-core-first discipline (M8a/M9a/P3-0a were each a single self-contained leaf). Re-split the remainder: **P3-0b** = PIT price-series shape (`PricePoint`) + the two *genuine* baseline **forecasters** (naive persistence, seasonal-naive) — kept a **stdlib-only pure leaf** like P3-0a (no I/O, no fees, no `evemarket` imports, hand-computable tests); **P3-0c** = the walk-forward engine (decision rule + realistic fills + M6-fee coupling — first fee-importing piece) that emits `TradeOutcome`s → `compute_metrics`, and which is where the **benchmark *policies*** buy-&-hold-item + hold-ISK belong (they are return streams / forced-signal policies, NOT price forecasters — the original plan miscategorized them); **P3-0d** = `market_history` reader + `backtest` CLI. **Key design calls:** (a) *we define the input shape* again (chronological `PricePoint{date, price}`) so P3-0b has ZERO store/M6/Config coupling and stays the pure ruler's companion; module stays `backtest.py` (the harness) — P3-0a's "no `evemarket` imports" is preserved through P3-0b and first relaxes at P3-0c where fees are legitimately needed. (b) `Forecast{predicted_price, direction}` where `direction = sign(predicted − last_observed)` — the predicted move that hit-rate compares against realized. (c) naive persistence predicts **no change** (`direction 0`) — the deliberately edge-less floor; under P3-0c's "trade only if predicted gain clears fees" rule it will never trade → degenerates to hold-ISK, which is the correct honest behavior (the do-nothing floor per §5). (d) seasonal-naive uses the standard `idx = (n-1)+h − m·ceil(h/m)` index, `ValueError` when `<0` (under one full season). Review focus on return: hand-computed series ([10..19], m=7 → h=1 idx3 pred13 dir−1, h=7 idx9 pred19 dir0, h=8 idx3) + up/flat direction cases + all `ValueError` edges (empty, horizon0, season0, too-short); pure (no I/O / no `evemarket` imports / stdlib `math` only); P3-0a code untouched + its 11 tests green; only `backtest.py`+test+HANDOFF touched; still **27** src files (no new module); mypy/ruff clean; commit hash §8.
+- **P3-0a REVIEW: DONE — Phase 3 scoring layer landed.** `analytics/backtest.py` + `tests/test_backtest.py` match the pack. Reviewer re-ran locally (fresh `--basetemp`) → **108 passed, 1 skipped** (prior 97 + 11 new backtest), ruff clean, mypy clean (**27** files). Verified pure leaf (stdlib `math`/`statistics` only; no `evemarket`/`Config`/fees/reader imports): `TradeOutcome{net_isk, correct_direction}` + `BacktestMetrics` frozen; `directional_hit_rate`, `expectancy_per_trade` (= `statistics.mean`), `profit_factor` (gross_profit/|gross_loss|, all-wins→`inf`, all-losses→`0.0`), `max_drawdown` (running-peak − equity, ≥0), `total_net_isk`, `expectancy_t_stat` (mean/(stdev/√n); n<2 or zero-var → `0.0`, NO scipy); each raises `ValueError` on empty via `_require_outcomes`; `compute_metrics` is the sole n=0 path → `sample_size=0`, nan rates, dd/total `0.0` (abstention first-class, no raise). Hand-computed test set matches the pack ([+100,-40,+60,-20] → expectancy 25 / hit 0.5 / PF 160/60 / maxDD 40 / total 100) + inf/0.0 sentinels + n=1/zero-var t-stat + empty-raises + nan-scorecard. Pure (no I/O), no new deps, only 2 files+HANDOFF, no `data/`. Git `9e32b68` + docs `4257704`. **Scoring ruler to-standard → unblocks P3-0b** (PIT series + baselines + walk-forward engine feeding `compute_metrics`).
 - **Phase 3 STARTED; P3-0 decomposed; P3-0a drafted (Context Pack).** M10 complete → next milestone is P3-0, the backtest harness GATE (§5: nothing downstream is trusted until it exists). Split **P3-0a pure metrics → P3-0b PIT series + baselines + walk-forward engine → P3-0c history reader + `backtest` CLI** (mirrors M8/M9: pure core → engine → reader/CLI). **Key boundary call:** P3-0 needs NO new deps (existing polars/duckdb/stdlib + M6 fees) — the ML-dep sign-off (§5/§7 "no new deps") is a SEPARATE gate at **P3-2** (the forecast model), so P3-0a proceeds without blocking on it; Codex is explicitly told NOT to add any ML/stats lib (t-stat via stdlib `statistics`, not scipy). P3-0a = `analytics/backtest.py` (planner-signed-off addition to §4 analytics layout, mirrors station_trade.py/haul.py — pure leaf module). Design: *we define the input shape* (`TradeOutcome{net_isk (already fee-net), correct_direction}`, chronological `Sequence` — order matters for drawdown) so 0a is fully self-contained/pure with ZERO store/M6/Config dependency (M8a/M9a pattern). Metrics encode the §5 success bar: `expectancy_per_trade` (THE binding metric — ISK/trade net fees), `directional_hit_rate` (the >50% sanity floor, NOT the goal), `profit_factor`, `max_drawdown` (equity-curve peak-to-trough), `total_net_isk`, `expectancy_t_stat` (honest significance via stdlib, n<2/zero-var → 0.0), packed by `compute_metrics` which alone accepts n=0 → all-nan/`sample_size=0` (**abstention is first-class** per §5 — full abstain is a valid, non-raising result, not an error). "Return vs baseline" deferred to the report layer (trivial expectancy subtraction once baselines land in P3-0b). Review focus on return: hand-computed metrics ([+100,-40,+60,-20] → expectancy 25 / hit 0.5 / PF 160/60 / maxDD 40 / total 100), profit_factor inf (all-wins) & 0.0 (all-losses) sentinels, t-stat n=1/zero-var → 0.0, `compute_metrics([])` nan-scorecard (no raise) vs individual funcs raising `ValueError` on empty, pure (no I/O / no `evemarket` imports), no new deps, only 2 files+HANDOFF, mypy(27 files)/ruff clean, commit hash §8.
 - **M10b REVIEW: DONE — M10 COMPLETE, both scanners in one dashboard.** `ui/app.py` haul panel + `tests/test_ui_app.py` haul tests match the pack. Reviewer re-ran locally (fresh `--basetemp`) → **97 passed, 1 skipped** (prior 93 + 4 new haul), ruff clean, mypy clean (**26** files — only `app.py` edited, no new module). Verified: imports added (`HaulResult, scan_haul_opportunities` from analytics.haul; `read_haul_quotes` added to the readers import); `_result_rows` widened to `list[StationTradeResult] | list[HaulResult]` (asdict works for both — no duplicated logic); 4 new keyed sidebar inputs (`dest_region`/`dest_station` default `0`, `min_total_profit`, `max_days_to_sell`); **dest gate** `int(dest_region)<=0 or int(dest_station)<=0` → "Enter a destination…" + skip read (the load-bearing default that keeps the haul panel from rendering a dataframe when dest unset → M10a's `len(at.dataframe)==1` station test stays green); **`max_days_to_sell` trap handled** (`md = max_days_to_sell if >0 else None` — never passes `0.0` which would raise); `read_haul_quotes(source=resolved station-panel region/station, dest, volume_window_days=)` → `scan_haul_opportunities(min_roi/min_total_profit/min_daily_volume/max_days_to_sell/limit)` → caption `Source: r/s  Dest: r/s  Quotes: n`; both haul empty-state strings verbatim from `haul_command`; `st.dataframe(_result_rows(haul_results))`. **Station section untouched.** Pure presentation, no analytics/I-O, no new deps, source hub reuses the station widgets, shared filters not duplicated. Tests hermetic (two-region tmp fixtures, dest history): dest-prompt, happy-path (source 34 ask-only + dest 34 bid-only → only the haul table renders, disambiguated by the `days_to_sell` column, `len==1`), missing-dest-snapshot, filter-excludes-all; existing 3 station tests unchanged + green. Git `96d74da` + docs `504ef8b`; scoped files only, no `data/`. **Minor (non-blocking), both fine:** (a) happy-path asserts the `days_to_sell` haul-only column (st.dataframe's str repr truncates middle cols) — sufficient to disambiguate from a station table; (b) Codex cleaned up its fresh `.pytest-tmp-m10b*` dirs; the pre-existing untracked `.pytest-tmp2/` (a prior reviewer-run scratch dir, perm-denied to delete) remains unstaged — harmless, not in any commit. **M10 Streamlit dashboard COMPLETE end-to-end (station-trade + haul in one browser view).**
 - **M10a REVIEW: DONE — first browser surface is live.** `pyproject.toml` `[ui]` extra + `ui/__init__.py` + `ui/app.py` + `tests/test_ui_app.py` match the pack. Reviewer re-ran locally (fresh `--basetemp` to dodge the Windows `.pytest-tmp` reuse PermissionError) → **93 passed, 1 skipped** (prior 90 + 3 new UI), ruff clean, mypy clean (**26** files); the 3 AppTest tests genuinely RAN (streamlit 1.58.0 installed via `[ui]`, not skipped). Verified: `[ui]=["streamlit"]` optional, streamlit absent from core deps; `app.py` is pure `scan_command` read→scan wiring (`load_config`→`read_station_quotes`→`scan_station_trades`→`st.dataframe(list[dict])`), both empty-state strings mirrored verbatim, ZERO analytics/I-O of its own; no haul code (correctly held for M10b); keyed sidebar widgets so config path resolves region/station defaults AND AppTest can inject. Tests hermetic (tmp config/snapshot/market.duckdb/sde.duckdb): empty-state ("No market snapshot"), happy-path (34/Tritanium rendered, sell-only 35 skipped → exactly 1 dataframe), filter-excludes-all (min_roi=999 → "No station-trade opportunities"). Git `788d295` + docs `0a531e4`; exactly the 5 scoped files, no `data/`. **Deviations, both accepted:** (a) AppTest 1.58 can't set keyed widget values before the first run → tests pre-seed `session_state` (valid/cleaner idiom); (b) Codex corrected my pack's arithmetic — src is **26** files not 25 (both `ui/__init__.py` + `ui/app.py` new from a base of 24), and streamlit ships `py.typed` so NO `streamlit.*` mypy override was needed (pyproject got only the `[ui]` extra). Good catches, honestly logged. Dashboard station-trade panel to-standard → unblocks M10b. **Note for M10b:** the station happy-path test asserts `len(at.dataframe) == 1` — M10b's haul panel MUST default to no-dest (so it renders an info prompt, not a dataframe) or that assertion breaks; the existing 3 tests must stay green.
@@ -476,7 +605,7 @@ When done: append §8 entry (terse, **INCLUDE the commit hash + what you gathere
 > Full per-task logs M0–M5-FIX archived in `HANDOFF_ARCHIVE.md` §C.
 > Template: `### M<n> — <title> — <date> — COMPLETE/BLOCKED` then: Files | Commands+result | Verification | Deviations | Questions.
 
-_(Append new entries below — next: P3-0a.)_
+_(Append new entries below — next: P3-0c. P3-0b/P3-0a entries are below.)_
 
 ### M6 — deterministic broker fee + sales tax — 2026-06-28 — COMPLETE
 - Files: `src/evemarket/analytics/fees.py`, `tests/test_fees.py`, `HANDOFF.md`.
@@ -639,6 +768,23 @@ _(Append new entries below — next: P3-0a.)_
 - Deviations: fresh `.pytest-tmp-p30a*` dirs removed after tests; pre-existing `.pytest-tmp-rev/` and `.pytest-tmp2/` remain permission-denied and unstaged. `profit_factor` returns `inf` whenever gross loss is zero, including zero-only sequences; no separate zero-only behavior specified.
 - Questions: none.
 - Commit: `9e32b68`.
+
+### P3-0b - PIT price series + pure baseline forecasters - 2026-06-29 - COMPLETE
+- Files: `src/evemarket/analytics/backtest.py`, `tests/test_backtest.py`, `HANDOFF.md`.
+- Gathered/read: `src/evemarket/analytics/backtest.py` P3-0a metric style; `tests/test_backtest.py` existing 11 metric tests; `src/evemarket/analytics/station_trade.py` frozen dataclass + keyword-only `ValueError` convention; `src/evemarket/analytics/haul.py` second dataclass/validation example.
+- Commands+result:
+  - `C:\Users\M0obo\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe -m pytest tests\test_backtest.py -q --basetemp .pytest-tmp-p30b` -> FAIL: test expected seasonal horizon `7`/`14` to move down; formula maps full-season horizons to last observed point. Test fixed.
+  - `C:\Users\M0obo\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe -m ruff check src\evemarket\analytics\backtest.py tests\test_backtest.py` -> `All checks passed!`
+  - `C:\Users\M0obo\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe -m pytest tests\test_backtest.py -q --basetemp .pytest-tmp-p30b2` -> `22 passed, 1 warning` (pytest cache WinError 5 only).
+  - `C:\Users\M0obo\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe -m ruff check src\evemarket\analytics\backtest.py tests\test_backtest.py` -> `All checks passed!`
+  - `C:\Users\M0obo\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe -m pytest -q --basetemp .pytest-tmp-p30b-full` -> `119 passed, 1 skipped, 1 warning` (pytest cache WinError 5 only).
+  - `C:\Users\M0obo\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe -m ruff check .` -> three access-denied warnings + `All checks passed!`
+  - `C:\Users\M0obo\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe -m mypy src/` -> `Success: no issues found in 27 source files`
+  - `git status --short` -> scoped files + unrelated untracked `HANDOFF_ARCHIVE.md`; pre-existing `.pytest-tmp-rev/`, `.pytest-tmp-rev2/`, `.pytest-tmp2/` permission warnings; no `data/`/duckdb/parquet.
+- Verification: PASS; `PricePoint`/`Forecast`, naive persistence, seasonal-naive index, up/down/flat directions, empty/invalid horizon/invalid season/too-short `ValueError` cases covered. Module remains stdlib-only; no `evemarket` imports/no config/readers/fees/engine.
+- Deviations: corrected initial seasonal test expectation after focused failure; removed fresh `.pytest-tmp-p30b-full/`; pre-existing permission-denied temp dirs remain unstaged.
+- Questions: none.
+- Commit: pending.
 
 ## 9. Open Questions / Blockers
 

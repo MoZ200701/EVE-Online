@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from math import sqrt
+from math import ceil, sqrt
 from statistics import mean, stdev
 
 
@@ -112,3 +112,69 @@ def compute_metrics(outcomes: Sequence[TradeOutcome]) -> BacktestMetrics:
 def _require_outcomes(outcomes: Sequence[TradeOutcome]) -> None:
     if not outcomes:
         raise ValueError("outcomes must not be empty")
+
+
+@dataclass(frozen=True)
+class PricePoint:
+    """One point in a point-in-time daily price series."""
+
+    date: str
+    price: float
+
+
+@dataclass(frozen=True)
+class Forecast:
+    """One forecaster prediction for a future point."""
+
+    predicted_price: float
+    direction: int
+
+
+def naive_persistence_forecast(
+    series: Sequence[PricePoint],
+    *,
+    horizon: int,
+) -> Forecast:
+    """Predict the last observed price at the target horizon."""
+    _require_price_series(series)
+    if horizon < 1:
+        raise ValueError("horizon must be at least 1")
+
+    return Forecast(predicted_price=series[-1].price, direction=0)
+
+
+def seasonal_naive_forecast(
+    series: Sequence[PricePoint],
+    *,
+    horizon: int,
+    season_length: int,
+) -> Forecast:
+    """Predict from the matching point in the prior season."""
+    _require_price_series(series)
+    if horizon < 1:
+        raise ValueError("horizon must be at least 1")
+    if season_length < 1:
+        raise ValueError("season_length must be at least 1")
+
+    idx = (len(series) - 1) + horizon - season_length * ceil(horizon / season_length)
+    if idx < 0:
+        raise ValueError("series too short for seasonal_naive at this horizon/season_length")
+
+    predicted_price = series[idx].price
+    return Forecast(
+        predicted_price=predicted_price,
+        direction=_sign(predicted_price - series[-1].price),
+    )
+
+
+def _require_price_series(series: Sequence[PricePoint]) -> None:
+    if not series:
+        raise ValueError("series must not be empty")
+
+
+def _sign(delta: float) -> int:
+    if delta > 0:
+        return 1
+    if delta < 0:
+        return -1
+    return 0
