@@ -53,6 +53,7 @@ Key IDs: The Forge `10000002` (Jita; start here only). Jita IV-4 station `600037
 - `polars` (dataframes), `pydantic` (validation), `typer` (CLI), `APScheduler` (scheduling), `pytz` (DuckDB TIMESTAMPTZ↔Python; approved M3-FIX2).
 - **Generic seam:** every trade = `ProfitOpportunity` with pluggable `Acquisition` (now `MarketBuy`; future `Manufacture`) + `Disposal`. Industry slots in here without rewrite.
 - **ESI client is load-bearing:** caching (ETag/Expires + `If-None-Match`), error-budget backoff, pagination, gzip, retry-on-5xx, User-Agent with contact from config.
+- **UI layer (added 2026-06-29, planner sign-off — USER-APPROVED):** `streamlit` local browser dashboard, **optional** install only (`pip install -e ".[ui]"` extra; NOT a core dep — core CLI stays dep-light). Module `src/evemarket/ui/app.py`, launched via `streamlit run`. **Pure presentation:** reuses `load_config` + the M8/M9 readers + scanners; ZERO analytics/I-O logic of its own (same discipline as the CLI commands). This is the ONLY browser surface; everything else stays `typer` CLI.
 
 **Layout:**
 ```
@@ -64,6 +65,7 @@ src/evemarket/: __init__.py  config.py  cli.py
   ingest/{__init__,orders,history,prices,backfill}.py
   store/{__init__,schema,writers,quality,readers}.py   # readers.py added M8b (planner sign-off 2026-06-28)
   analytics/{__init__,fees,opportunity,station_trade,haul}.py
+  ui/{__init__,app}.py   # streamlit dashboard, added M10 (planner sign-off 2026-06-29, optional [ui] extra)
 tests/
 ```
 
@@ -71,9 +73,11 @@ tests/
 
 **Phase 1 — data pipeline**
 - M0 Scaffold ✅ | M1 SDE→`sde.duckdb` ✅ | REPO git+push ✅ | M2 ESI client ✅ | M3 Order snapshots + `ingest_runs` ✅ | M4a ESI daily history → `market_history` ✅ | M4b everef.net bulk backfill ✅ | M5a ESI prices → `market_prices` ✅
-- **M5** Prices ✅ | scheduler (M5b) ✅ | data-quality (M5c) ✅ | M5-FIX mypy-clean ✅ — **Phase 1 COMPLETE & to-standard.** | M6 `analytics/fees.py` ✅ `2cee47b` | M7 `analytics/opportunity.py` seam ✅ `46261d0` | M8a `station_trade.py` ranking core ✅ `29f7a9c` | M8b `store/readers.py` DuckDB reader ✅ `55d5a3e` | M8c CLI `scan` ✅ `0bf9a99`. ← **CURRENT: Phase 2 / M9 `analytics/haul.py` regional arbitrage — M9a pure core ✅ `ab937a9` → M9b cross-region reader (ACTIVE, §6) → M9c CLI `haul`.**
+- **M5** Prices ✅ | scheduler (M5b) ✅ | data-quality (M5c) ✅ | M5-FIX mypy-clean ✅ — **Phase 1 COMPLETE & to-standard.** | M6 `analytics/fees.py` ✅ `2cee47b` | M7 `analytics/opportunity.py` seam ✅ `46261d0` | M8a `station_trade.py` ranking core ✅ `29f7a9c` | M8b `store/readers.py` DuckDB reader ✅ `55d5a3e` | M8c CLI `scan` ✅ `0bf9a99`. ← **CURRENT: Phase 2 / M9 `analytics/haul.py` regional arbitrage — M9a pure core ✅ `ab937a9` → M9b cross-region reader ✅ `81148ea` → M9c CLI `haul` (DRAFTED — ACTIVE §6). Then M10 Streamlit dashboard.**
 
-**Phase 2 — deterministic analytics (stubbed):** `fees.py` ✅, `opportunity.py` ✅, `station_trade.py` (first scanner — **decomposed: M8a pure ranking ✅ → M8b DuckDB reader ✅ → M8c CLI ✅**), then `haul.py` (**decomposed: M9a pure core → M9b cross-region reader → M9c CLI `haul`**).
+**Phase 2 — deterministic analytics (stubbed):** `fees.py` ✅, `opportunity.py` ✅, `station_trade.py` (first scanner — **decomposed: M8a pure ranking ✅ → M8b DuckDB reader ✅ → M8c CLI ✅**), then `haul.py` (**decomposed: M9a pure core ✅ → M9b cross-region reader → M9c CLI `haul`**).
+
+**M10 — Streamlit local dashboard** (`src/evemarket/ui/app.py`) — **FIRST & only browser-visual milestone.** Queued AFTER M9c so it shows BOTH scanners (station-trade + haul) in one view. New dep `streamlit` via optional `[ui]` extra (signed off §4, 2026-06-29, user-approved). Pure presentation: reuse `load_config` + readers + scanners. Run: `streamlit run src/evemarket/ui/app.py`. **Note:** the dashboard only shows real numbers after a live ESI ingest has populated `data/` (else it renders the same "no snapshot" empty state the CLI does). May be decomposed when scoped.
 
 **Phase 3 — forecasting & long-hold (position) trading** *(committed 2026-06-28; honest-backtest-first; starts only after Phase 2 scanners land — no jumping ahead).*
 Goal: predict forward price/return over a **multi-week horizon** (target ~2–6 wks, configurable — covers "buy and hold a month+") and surface backtested long-hold suggestions via the existing `ProfitOpportunity` seam (a hold = a `Disposal` at a *predicted future* price). Trained **locally** on EVE history (GBM / time-series per §3), NOT LLM.
@@ -92,11 +96,98 @@ Goal: predict forward price/return over a **multi-week horizon** (target ~2–6 
 
 Definition of done is per-step in each task prompt.
 
-## 6. Current Task (Codex) — ✅ M9b ACTIVE
+## 6. Current Task (Codex) — ▶ M9c FINALIZE (commit only — code already verified)
 
-**STATUS: M9b ACTIVE — cross-region DuckDB haul reader. M9a COMPLETE (`ab937a9`), reviewed DONE (§7). Execute the M9b Context Pack directly below. The collapsed M8c pack further down is finished reference only — do NOT execute it.**
+**STATUS: M9c code is WRITTEN in the working tree and reviewer-VERIFIED DONE (§7) — but you stopped before committing/logging. Do NOT re-edit `cli.py` or the test; the implementation already passes (90 passed/1 skipped, ruff+mypy clean, 24 files). Your ONLY remaining task is to finalize, then STOP.**
+
+### M9c-FINALIZE — commit + log + push the already-written haul command
+
+The reviewer re-ran the suite and confirmed the haul command + `tests/test_cli_haul.py` are correct and to-standard. The code is done. Finish the workflow:
+
+1. **Re-confirm green (your env)** — bundled-Python abs path `C:\Users\M0obo\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe` (bare `python` not on PATH); if AppData temp denied → `--basetemp .pytest-tmp` at a FRESH dir:
+   - `python -m pytest -q` → expect **90 passed, 1 skipped** (pytest-cache WinError 5 is benign).
+   - `python -m ruff check .` → clean. `python -m mypy src/` → clean (**24** source files).
+2. **Append §8 entry** (terse per §2): `### M9c — CLI haul command — 2026-06-29 — COMPLETE` with Files (`src/evemarket/cli.py`, `tests/test_cli_haul.py`, `HANDOFF.md`) | what you gathered (the existing `scan_command`/`_format_scan_table` style; `read_haul_quotes` sig; `scan_haul_opportunities`/`HaulResult` fields) | commands+results | Verification PASS | Deviations | Questions | **Commit hash**.
+3. **Stage ONLY** `src/evemarket/cli.py`, `tests/test_cli_haul.py`, `HANDOFF.md`. `git status --short` must show no `data/`/`*.duckdb`/parquet; untracked `HANDOFF_ARCHIVE.md` is an unrelated planner doc — do NOT stage it.
+4. `git commit -m "feat: CLI haul command -> cross-region table (M9c)"` then `git push origin main` (no force).
+5. STOP. After M9c → **M10** Streamlit dashboard (planner will scope next; shows BOTH scanners).
+
+**Boundary** — finalize only. Do NOT modify source/tests (they're verified). If a check unexpectedly fails in your env, STOP + §9 with the exact output (do NOT start editing to "fix" verified-green code).
 
 ---
+
+<details><summary>Original M9c build pack (reference — code already written from this)</summary>
+
+### M9c — CLI `haul` command
+
+Final piece of the haul scanner. ADD a Typer `haul` command that wires the M9b reader → the M9a pure scanner → a formatted ISK table — the cross-region twin of M8c's `scan`. This completes the M9 vertical slice (live two-region data → ranked haul trades). **No analytics logic here** — `haul` only loads config, resolves hubs, calls the two existing functions, and formats output. After M9c, both scanners are end-to-end and M10 (Streamlit dashboard) can show both.
+
+**New-workflow note:** read the **To gather** files for exact signatures + the existing `scan` command style to mirror; write only the files in scope. Anything that changes this design → STOP + §9.
+
+### CONTEXT PACK
+
+**Files in scope (write only these):**
+- EDIT `src/evemarket/cli.py` — ADD one `@app.command("haul")` function + ONE new private formatter `_format_haul_table(results) -> str` (mirror `_format_scan_table`). ADD imports `from evemarket.analytics.haul import HaulResult, scan_haul_opportunities` and `read_haul_quotes` to the existing `from evemarket.store.readers import ...` line. Do NOT alter `scan_command`, `_format_scan_table`, or any other existing command.
+- CREATE `tests/test_cli_haul.py`.
+- EDIT `HANDOFF.md` §8 (log).
+- Do NOT touch `store/readers.py`, `analytics/haul.py`, `analytics/station_trade.py`, `config.py`, or anything else.
+
+**To gather (read yourself — do not edit):**
+- `src/evemarket/cli.py` — mirror `scan_command` + `_format_scan_table` EXACTLY: the `--config`/`-c` `typer.Option` block, `load_config(config)`, the `region or loaded_config.tracked_regions[0]` / `station if station is not None else loaded_config.home_hub_station_id` resolution, `typer.echo`, and the plain f-string column-width table builder (no `rich`, no table dep). Also mirror `_parse_backfill_dates`' use of `typer.BadParameter` for required-together params.
+- `src/evemarket/store/readers.py` — `read_haul_quotes` (signature pasted below; confirm).
+- `src/evemarket/analytics/haul.py` — `scan_haul_opportunities` + `HaulResult` fields (pasted below; confirm).
+- `tests/test_cli_scan.py` — reuse its hermetic fixture approach verbatim (tmp `CliRunner` + `write_orders_snapshot`/`record_ingest_run`/`market_history` rows + tmp `sde.duckdb` with `volume` col + a `config.toml` pointing `data_dir` at `tmp_path`).
+
+**Caller contracts (paste — trust these):**
+- `read_haul_quotes(config: Config, source_region_id: int, source_station_id: int, dest_region_id: int, dest_station_id: int, *, volume_window_days: int = 30) -> list[HaulQuote]` — sync; `[]` when EITHER region's snapshot is missing; raises `ValueError` if `volume_window_days < 1`.
+- `scan_haul_opportunities(quotes, config, *, min_roi=0.0, min_total_profit=0.0, min_daily_volume=0.0, max_days_to_sell=None, limit=None) -> list[HaulResult]` — raises `ValueError` on negative thresholds / `max_days_to_sell<=0` / `limit<1`.
+- `HaulResult(type_id:int, type_name:str, source_price:float, dest_price:float, quantity:int, total_volume_m3:float, unit_profit:float, total_profit:float, roi:float, profit_per_m3:float, daily_volume:float, days_to_sell:float)` — `roi` is a fraction; `days_to_sell` may be `float("inf")` (zero daily volume).
+- `Config` has `tracked_regions: list[int]` (default `[10000002]`) and `home_hub_station_id: int` (default `60003760`). **No dest-hub field exists** — dest must be supplied on the CLI.
+
+**Deliverable — `@app.command("haul")` `def haul_command(...)`:**
+- Options (mirror `scan_command` style; `--config`/`-c` Path default `config.toml`):
+  - `--source-region` `int | None` default `None` → resolve to `source_region or loaded_config.tracked_regions[0]`.
+  - `--source-station` `int | None` default `None` → resolve to `source_station if source_station is not None else loaded_config.home_hub_station_id`.
+  - `--dest-region` `int | None` default `None` — **required** (see body).
+  - `--dest-station` `int | None` default `None` — **required** (see body).
+  - `--min-roi` `float` default `0.0`, `--min-total-profit` `float` default `0.0`, `--min-daily-volume` `float` default `0.0`.
+  - `--max-days-to-sell` `float | None` default `None` (no filter when unset; pass straight through — the scanner validates `>0`).
+  - `--limit` `int` default `20`, `typer.Option(..., min=1)`.
+  - `--volume-window-days` `int` default `30`, `typer.Option(..., min=1)`.
+- Body:
+  - `load_config(config)`; resolve source region+station as above.
+  - **Required dest:** `if dest_region is None or dest_station is None: raise typer.BadParameter("--dest-region and --dest-station are required.")` (mirror `_parse_backfill_dates`' paired-required pattern). Do this BEFORE any reads.
+  - `quotes = read_haul_quotes(loaded_config, src_region, src_station, dest_region, dest_station, volume_window_days=...)`.
+  - `results = scan_haul_opportunities(quotes, loaded_config, min_roi=..., min_total_profit=..., min_daily_volume=..., max_days_to_sell=..., limit=...)`.
+- Output:
+  - Echo header: `Source: <sr>/<ss>  Dest: <dr>/<ds>  Quotes: <len(quotes)>`.
+  - `quotes == []` → echo `No market snapshot found for the source/destination regions. Run ingest-orders for both first.` and return (exit 0).
+  - `results == []` → echo `No haul opportunities met the filters.` and return (exit 0).
+  - Else `typer.echo(_format_haul_table(results))`.
+- `_format_haul_table(results: list[HaulResult]) -> str`: same builder shape as `_format_scan_table` — header row + one row per result; right-align numerics with `f"{v:,.2f}"`, `type_name` left-aligned, `type_id`/`quantity` as `str(...)`, roi as `f"{result.roi*100:,.2f}"`. Columns (in order): `type_id`, `type_name`, `source`, `dest`, `qty`, `total_m3`, `unit_profit`, `total_profit`, `roi%`, `profit/m3`, `daily_vol`, `days_to_sell`. (`days_to_sell` `inf` formats as `inf` via `f"{float('inf'):,.2f}"` — fine.)
+
+**Conventions:** NO analytics/I/O logic in the command beyond the two calls + formatting; full type hints; reuse the file's existing `from __future__ import annotations`; terse; **no new deps** (`typer`, stdlib only — `typer.testing.CliRunner` ships with typer).
+
+**Boundary** — gather only the To-gather files; write only the 3 in-scope; do NOT modify the reader/scanner or add new analytics. Design change needed → STOP + §9.
+
+**Verification (paste §8, terse per §2) — tests are HERMETIC (tmp fixtures + `CliRunner`, NO network/live data):**
+- Reuse `test_cli_scan.py`'s fixture approach. Build **two** order snapshots under a `tmp_path` data_dir: a SOURCE region (e.g. `10000002`, source station) + a DEST region (e.g. `10000043`, dest station); record each via `record_ingest_run` (`source='esi_orders'`, `status='success'`, `snapshot_path` set). Add `market_history` rows for the DEST region. Build a tmp `sde.duckdb` `sde_types` with `(type_id, type_name, volume)` (give type 34 a small `volume` so quantity ≥ 1 under default `cargo_m3`/`capital_isk`). Write a `config.toml` in `tmp_path` setting `data_dir` to that dir. Invoke `CliRunner().invoke(app, ["haul", "--config", <cfg>, "--source-region", "10000002", "--source-station", "<ss>", "--dest-region", "10000043", "--dest-station", "<ds>"])`. Then:
+  - **Happy path:** source has type 34 SELL@100 (ask); dest has type 34 BUY@130 (bid) + history volume → `exit_code == 0`; output contains `Tritanium` and `34` and a positive `total_profit`.
+  - **Missing dest required:** invoke without `--dest-region`/`--dest-station` → non-zero exit (`typer.BadParameter`); output mentions `--dest-region`.
+  - **No snapshot:** point at an empty market db (no ingest_runs) → `exit_code == 0` and output contains `No market snapshot`.
+  - **Filter excludes all:** pass `--min-total-profit 1e15` → `exit_code == 0` and output contains `No haul opportunities`.
+  - (Optional) `--limit 1` returns at most one data row.
+- `python -m pytest -q` (bundled-Python abs path `C:\Users\M0obo\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe`; if AppData temp denied → `--basetemp .pytest-tmp` at a fresh dir) — prior **85 passed, 1 skipped** stays green + new pass.
+- `python -m ruff check .` → clean. `python -m mypy src/` → **clean** (still **24** source files — only `cli.py` edited, no new module).
+- Pre-commit `git status --short`: only `src/evemarket/cli.py`, `tests/test_cli_haul.py`, `HANDOFF.md` (untracked `HANDOFF_ARCHIVE.md` is an unrelated planner doc — do NOT stage it); no `data/`/`*.duckdb`/parquet. Commit `feat: CLI haul command -> cross-region table (M9c)`; `git push origin main` (no force). Include `HANDOFF.md`.
+
+When done: append §8 entry (terse, **INCLUDE the commit hash + what you gathered from the existing `scan` style**) and STOP. After M9c → **M10** Streamlit dashboard (`[ui]` extra + `ui/app.py`; shows BOTH scanners — to be scoped/decomposed by the planner).
+
+</details>
+
+---
+
+<details><summary>Completed — M9b: cross-region DuckDB haul reader (reference)</summary>
 
 ### M9b — cross-region DuckDB haul reader
 
@@ -164,6 +255,8 @@ def read_haul_quotes(
 - Pre-commit `git status --short`: only `src/evemarket/store/readers.py`, `tests/test_readers.py`, `HANDOFF.md` (untracked `HANDOFF_ARCHIVE.md` is unrelated — do NOT stage). No `data/` / duckdb / parquet. Commit `feat: cross-region haul reader -> store/readers.py (M9b)`; `git push origin main` (no force).
 
 When done: append §8 entry (terse, **INCLUDE the commit hash + what you gathered/reused**) and STOP. After M9b → **M9c** CLI `haul` command (wires `read_haul_quotes` → `scan_haul_opportunities` → formatted table; mirrors M8c `scan`).
+
+</details>
 
 ---
 
@@ -251,6 +344,11 @@ When done: append §8 entry (terse, **INCLUDE the commit hash + what you gathere
 - **Deferred (non-blocking, M0):** switch `Config`/`SkillConfig` `BaseSettings`→`BaseModel` so TOML is sole config source (BaseSettings allows silent env-var overrides). Small future task. (Also tracked §9.)
 
 **Recent verdicts:**
+- **M9c REVIEW: DONE (code) — FINALIZE PENDING.** Codex wrote `cli.py` `haul` command + `_format_haul_table` + `tests/test_cli_haul.py` in the working tree but **stopped before commit/push/§8 log** (work was uncommitted + unlogged at review time). Reviewer (Claude) re-ran locally: **90 passed, 1 skipped** (prior 85 + 5 new haul tests), `ruff` clean, `mypy` clean (24 files). Verified against the pack: imports added (`HaulResult, scan_haul_opportunities` from analytics.haul; `read_haul_quotes` added to the readers import); options mirror `scan_command`; source resolved `source_region or tracked_regions[0]` / `source_station ?? home_hub_station_id`; **dest required via `typer.BadParameter` BEFORE any reads** (non-interactive, correct); `read_haul_quotes(...,volume_window_days=)` → `scan_haul_opportunities(...,min_roi/min_total_profit/min_daily_volume/max_days_to_sell/limit)` → `_format_haul_table`; header `Source: r/s  Dest: r/s  Quotes: n`; empty-quotes → "No market snapshot…" and empty-results → "No haul opportunities…" both exit 0; `_format_haul_table` has the 12 spec cols in order, numerics right-aligned `,.2f`, `days_to_sell` `inf` renders fine. No analytics/I/O logic in the command; no new deps; existing `scan_command`/`_format_scan_table` untouched. Tests hermetic (two-region tmp snapshots + dest history + tmp `sde.duckdb` w/ `volume`): happy-path (34 paired, 35 source-only + 36 dest-only excluded → Quotes:1), required-dest, no-snapshot, filter-excludes-all, `--limit 1` (36 outranks 34 on profit). **Code is to-standard → M9 station+haul scanners complete end-to-end once committed.** Remaining = mechanical finalize (Codex: stage 3 files → §8 log → commit → push) per §6. **Minor (non-blocking):** the `--limit 1` test seeds SDE `type_name="#36"` literally rather than omitting type 36 to exercise the real reader `#{tid}` fallback — harmless (fallback already covered in `test_readers.py`); the CLI test only needs a 2nd item for ranking/limit. NOT a REDO.
+- **M9c drafted (Context Pack) — final M9 slice.** CLI `haul` command = cross-region twin of M8c `scan`: pure wiring `read_haul_quotes` (M9b) → `scan_haul_opportunities` (M9a) → f-string table, mirroring `scan_command`/`_format_scan_table`. Key design call: `Config` has NO dest-hub field (source defaults to `tracked_regions[0]`/`home_hub_station_id`; dest has no sensible default), so `--dest-region`/`--dest-station` are **required** — enforced via `typer.BadParameter` BEFORE any reads (mirrors `_parse_backfill_dates`' paired-required pattern), not via prompts (non-interactive). New formatter `_format_haul_table` adds haul-specific cols (`qty`, `total_m3`, `total_profit`, `profit/m3`, `days_to_sell`); `days_to_sell=inf` formats cleanly as `inf`. Scoped to `cli.py` + new `tests/test_cli_haul.py` + HANDOFF; no analytics logic, no new deps, no module added (still 24 src files). Review focus on return: required-dest BadParameter, source-default resolution, both empty-state messages exit 0, happy-path table w/ positive profit, filter-empty path, `--limit` cut; hermetic tmp two-region fixtures (no network); mypy(24)/ruff clean; commit hash §8. After M9c → M10 Streamlit (shows both scanners).
+- **M9b REVIEW: DONE.** `store/readers.py` (`read_haul_quotes` + new `_read_type_metadata`) + `tests/test_readers.py` match the pack. Reviewer re-ran locally → **85 passed, 1 skipped**, ruff clean, mypy clean (24 files). Verified: single `ensure_market_db` connection; both region snapshots via `_latest_snapshot_path`, either None → `[]`; source asks = `_read_best_quotes(...) best_ask>0`, dest bids = `... best_bid>0` (reuses M8b helper — no new order-book SQL); **executable pairs = `source_asks.keys() & dest_bids.keys()` sorted by type_id**, empty → `[]`; daily_volume from **dest** region (`_read_daily_volumes(dest_region_id)`); new `_read_type_metadata` mirrors `_read_type_names` ATTACH/DETACH `(READ_ONLY)` + escaped-literal pattern, returns `(name, volume)`; SDE-absent/row-missing → `(f"#{tid}", 0.0)` fallback (0-vol quote returned as-is; M9a scanner then skips it). `read_station_quotes` + existing helpers untouched. Tests hermetic (two-region snapshots, dest history, tmp `sde.duckdb` w/ `volume` col): executable-pair join (34 paired; 35 source-only + 36 dest-only excluded), both no-snapshot paths → `[]`, SDE fallback (#37 / 0.0), haul-scanner feed-through, bad-window `ValueError`. Git `81148ea` + docs `02113ee`; scoped files only, no `data/`. Reader to-standard → unblocks M9c.
+  - **Minor (non-blocking, later):** `_read_type_metadata` casts `float(volume)` — a NULL SDE `volume` would raise. Real `invTypes.volume` is always populated so not a live risk; if ever hit, `COALESCE(volume, 0.0)`. NOT a REDO.
+- **M10 Streamlit dashboard committed to roadmap (user-approved, 2026-06-29).** User asked when a browser-checkable visual lands; tool was CLI-only by design. User chose a **Streamlit** local dashboard. Planner sign-off recorded in §4 (new UI layer) + §5 (M10). Key decisions: (a) `streamlit` is an **optional `[ui]` extra**, NOT a core dep — core CLI stays dep-light, honors the "no new deps" rule via explicit sign-off; (b) dashboard is **pure presentation** — reuses `load_config` + M8/M9 readers + scanners, no analytics of its own (same discipline as CLI commands); (c) **sequenced AFTER M9c** (don't interrupt active M9b; one-task-at-a-time) so it can show station-trade AND haul together — avoids building a station-only dashboard then reworking. M10 pack to be written once M9c lands; will likely decompose (pyproject `[ui]` extra + `ui/app.py` skeleton → wire scanners → polish). **Data caveat flagged to user:** dashboard only shows real numbers after a live ESI ingest populates `data/`; otherwise it renders the empty "no snapshot" state. **No interruption to M9 — M9b remains the active §6 task.**
 - **M9a REVIEW: DONE.** `analytics/haul.py` + `tests/test_haul.py` match the pack. Reviewer re-ran locally → **79 passed, 1 skipped**, ruff clean, mypy clean (24 files). Verified: `HaulQuote`/`HaulResult` frozen w/ exact fields; `quantity = min(floor(cargo/vol), floor(capital/per_unit_cost))` with `per_unit_cost` from a qty=1 `station_trade_opportunity().cost` (exact b/c fee is linear, no per-order min); all skip paths (src/dest/vol≤0, `quantity<1` incl the too-bulky `vol>cargo` case); ONE opp call at full qty for profit/roi (**no duplicated math** — the parity test confirms `result.total_profit == station_trade_opportunity(...).profit`); `days_to_sell=inf` at zero volume; inclusive threshold filters incl `max_days_to_sell`; deterministic sort `(-total_profit,-roi,type_id)` verified by the `[34,35,36,37]` case (34 wins on 300>200; among the 200-tie 35 leads on ROI from qty=5/unit40 → cost 515, then 36<37 by type_id); `ValueError` on all 5 bad inputs. The test's `_dest_price_for_unit_profit` correctly inverts the zero-skill fee math (`dest*0.895 − src*1.03`). Codex's lone deviation: it fixed its OWN sort-test fixture (first run expected roi-before-total-profit) to match the spec's total-profit-primary order — correct direction (test→spec), logged §8. Git `ab937a9` + docs `01cad84`; scoped files only, no `data/`. Pure core to-standard → unblocks M9b.
 - **M9 decomposed; M9a drafted (Context Pack).** Haul (regional arbitrage) split **M9a pure core → M9b cross-region reader → M9c CLI `haul`** (mirrors M8). M9a is self-contained: *we define the input shape* (`HaulQuote`: type_id/type_name/source_price=src ask/dest_price=dst bid/volume_m3/daily_volume), so **zero store-schema dependency** (DB internals gathered at M9b). Design: `HaulQuote`+`HaulResult` frozen + `scan_haul_opportunities(quotes, config, *, min_roi, min_total_profit, min_daily_volume, max_days_to_sell, limit)`. New value over M8a = **quantity sizing under cargo + capital constraints**: `quantity = min(floor(cargo_m3/volume_m3), floor(capital_isk/per_unit_cost))`, skip if `<1`; then ONE `station_trade_opportunity(...,quantity)` call gives profit/roi (reuses M6/M7 — **no duplicated math**). Per-unit cost from a qty=1 opp; capital cap is **exact** (fee linear, no per-order min). **Honesty decisions encoded (per §3):** (a) prices are guaranteed-executable (src ask/dst bid) + full station-trade fees both legs → profit is a *conservative floor*, immediate-fill lower-fee variant deferred; (b) liquidity *surfaced not baked* — `daily_volume`+`days_to_sell`(=load/turnover)+optional `min_daily_volume`/`max_days_to_sell` filters, NOT a capture-rate guess in headline profit (same stance as M8a). Sort `(-total_profit,-roi,type_id)`. Review focus on return: cargo-bound vs capital-bound quantity, the five skip paths, no-spread exclusion, each filter, `days_to_sell==inf` at zero volume, sort+limit+tiebreak, `ValueError` on bad thresholds/`limit=0`/`max_days_to_sell=0`, profit cross-checked against a direct `station_trade_opportunity` call (no duplicated math), pure (no I/O), no new deps, mypy(24 files)/ruff clean, only 2 files+HANDOFF touched, commit hash §8.
 - **M8c REVIEW: DONE — M8 station-trade scanner COMPLETE end-to-end.** `cli.py` `scan` command + `tests/test_cli_scan.py` match the pack. Reviewer re-ran locally → **66 passed, 1 skipped**, ruff clean, mypy clean (24 files). Command is pure wiring: `load_config` → resolve `region or tracked_regions[0]` / `station ?? home_hub_station_id` → `read_station_quotes(...,volume_window_days=)` → `scan_station_trades(...,min_roi/min_unit_profit/min_daily_volume/limit)` → `_format_scan_table`; no analytics/I/O logic added. Imports correct (`StationTradeResult,scan_station_trades` from station_trade; `read_station_quotes` from store.readers). Options mirror existing style (`--config`/`-c`, `--limit`/`--volume-window-days` `min=1`); empty-quotes → "No market snapshot…" and empty-results → "No station-trade opportunities…" both exit 0. Table: aligned f-string widths, numerics right-aligned w/ `,.2f`, roi as `roi*100`. Tests hermetic (tmp `CliRunner` + DuckDB/parquet/SDE fixtures, no network). The `--limit 1` test is strong — verifies ordering (type 36's 30-spread outranks 34's 20-spread), the limit cut, AND the `#36` name-fallback together; happy-path confirms two-sided 34 shown / sell-only 35 skipped. Git `0bf9a99` + docs `2812307`; scoped files only, no `data/`. **First scanner is live data → ranked trades end-to-end.** Next: M9 `haul.py` (needs scoping/decomposition).
@@ -269,7 +367,7 @@ When done: append §8 entry (terse, **INCLUDE the commit hash + what you gathere
 > Full per-task logs M0–M5-FIX archived in `HANDOFF_ARCHIVE.md` §C.
 > Template: `### M<n> — <title> — <date> — COMPLETE/BLOCKED` then: Files | Commands+result | Verification | Deviations | Questions.
 
-_(Append new entries below — next: M9b.)_
+_(Append new entries below — next: M9c.)_
 
 ### M6 — deterministic broker fee + sales tax — 2026-06-28 — COMPLETE
 - Files: `src/evemarket/analytics/fees.py`, `tests/test_fees.py`, `HANDOFF.md`.
@@ -369,6 +467,21 @@ _(Append new entries below — next: M9b.)_
 - Deviations: used bundled Python abs path; bare `python` known unavailable. No live run/network; hermetic tmp DuckDB/parquet/SDE fixtures only. Did not touch/stage unrelated `HANDOFF_ARCHIVE.md`.
 - Questions: none.
 - Commit: `81148ea`.
+
+### M9c - CLI haul command - 2026-06-29 - COMPLETE
+- Files: `src/evemarket/cli.py`, `tests/test_cli_haul.py`, `HANDOFF.md`.
+- Gathered/read: `src/evemarket/cli.py` (`scan_command`, `_format_scan_table`, `_parse_backfill_dates` style); `src/evemarket/store/readers.py` (`read_haul_quotes` signature/behavior); `src/evemarket/analytics/haul.py` (`HaulResult`, `scan_haul_opportunities`); `tests/test_cli_scan.py` hermetic CLI fixture style.
+- Commands+result:
+  - `C:\Users\M0obo\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe -m pytest tests\test_cli_haul.py -q --basetemp .pytest-tmp` -> FAIL: limit fixture expected fallback `#36`, but haul reader skips missing SDE volume; fixture fixed with explicit type 36 volume metadata.
+  - `C:\Users\M0obo\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe -m pytest tests\test_cli_haul.py -q --basetemp .pytest-tmp` -> `5 passed, 1 warning` (pytest cache WinError 5 only).
+  - `C:\Users\M0obo\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe -m pytest -q --basetemp .pytest-tmp` -> `90 passed, 1 skipped, 1 warning` (pytest cache WinError 5 only).
+  - `C:\Users\M0obo\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe -m ruff check .` -> `All checks passed!`
+  - `C:\Users\M0obo\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe -m mypy src/` -> `Success: no issues found in 24 source files`
+  - `git status --short` -> scoped files + unrelated untracked `HANDOFF_ARCHIVE.md`; no `data/`/duckdb/parquet.
+- Verification: PASS; source/default hub resolution, required dest params, no-snapshot message, filter-empty message, limit-one table, formatted ISK/ROI columns covered with hermetic tmp fixtures.
+- Deviations: used bundled Python abs path; bare `python` known unavailable. No live run/network; CLI tests use tmp DuckDB/parquet/SDE fixtures only. Did not touch/stage unrelated `HANDOFF_ARCHIVE.md`.
+- Questions: none.
+- Commit: pending.
 
 ## 9. Open Questions / Blockers
 

@@ -17,9 +17,10 @@ from evemarket.ingest.orders import ingest_orders
 from evemarket.ingest.prices import ingest_prices
 from evemarket.scheduler import build_scheduler
 from evemarket.sde.load import connect, download_sde, load_sde, table_counts
+from evemarket.analytics.haul import HaulResult, scan_haul_opportunities
 from evemarket.analytics.station_trade import StationTradeResult, scan_station_trades
 from evemarket.store.quality import run_quality_checks
-from evemarket.store.readers import read_station_quotes
+from evemarket.store.readers import read_haul_quotes, read_station_quotes
 from evemarket.store.schema import ensure_market_db
 
 app = typer.Typer(help="EVE Market Tool.")
@@ -439,6 +440,174 @@ def _format_scan_table(results: list[StationTradeResult]) -> str:
                 f"{row[2]:>{widths[2]}}  {row[3]:>{widths[3]}}  "
                 f"{row[4]:>{widths[4]}}  {row[5]:>{widths[5]}}  "
                 f"{row[6]:>{widths[6]}}  {row[7]:>{widths[7]}}"
+            )
+        )
+    return "\n".join(lines)
+
+
+@app.command("haul")
+def haul_command(
+    config: Path = typer.Option(
+        Path("config.toml"),
+        "--config",
+        "-c",
+        help="Path to a TOML configuration file.",
+    ),
+    source_region: int | None = typer.Option(
+        None,
+        "--source-region",
+        help="Source EVE region ID. Defaults to the first configured tracked region.",
+    ),
+    source_station: int | None = typer.Option(
+        None,
+        "--source-station",
+        help="Source EVE station ID. Defaults to the configured home hub station.",
+    ),
+    dest_region: int | None = typer.Option(
+        None,
+        "--dest-region",
+        help="Destination EVE region ID.",
+    ),
+    dest_station: int | None = typer.Option(
+        None,
+        "--dest-station",
+        help="Destination EVE station ID.",
+    ),
+    min_roi: float = typer.Option(
+        0.0,
+        "--min-roi",
+        help="Minimum ROI fraction.",
+    ),
+    min_total_profit: float = typer.Option(
+        0.0,
+        "--min-total-profit",
+        help="Minimum net ISK total profit.",
+    ),
+    min_daily_volume: float = typer.Option(
+        0.0,
+        "--min-daily-volume",
+        help="Minimum destination average daily traded volume.",
+    ),
+    max_days_to_sell: float | None = typer.Option(
+        None,
+        "--max-days-to-sell",
+        help="Maximum estimated days to sell at destination volume.",
+    ),
+    limit: int = typer.Option(
+        20,
+        "--limit",
+        min=1,
+        help="Maximum number of opportunities to print.",
+    ),
+    volume_window_days: int = typer.Option(
+        30,
+        "--volume-window-days",
+        min=1,
+        help="Trailing market-history window for average daily volume.",
+    ),
+) -> None:
+    """Scan latest cross-region hauling opportunities."""
+
+    loaded_config = load_config(config)
+    selected_source_region = source_region or loaded_config.tracked_regions[0]
+    selected_source_station = (
+        source_station
+        if source_station is not None
+        else loaded_config.home_hub_station_id
+    )
+    if dest_region is None or dest_station is None:
+        raise typer.BadParameter("--dest-region and --dest-station are required.")
+
+    quotes = read_haul_quotes(
+        loaded_config,
+        selected_source_region,
+        selected_source_station,
+        dest_region,
+        dest_station,
+        volume_window_days=volume_window_days,
+    )
+    results = scan_haul_opportunities(
+        quotes,
+        loaded_config,
+        min_roi=min_roi,
+        min_total_profit=min_total_profit,
+        min_daily_volume=min_daily_volume,
+        max_days_to_sell=max_days_to_sell,
+        limit=limit,
+    )
+
+    typer.echo(
+        f"Source: {selected_source_region}/{selected_source_station}  "
+        f"Dest: {dest_region}/{dest_station}  Quotes: {len(quotes)}"
+    )
+    if not quotes:
+        typer.echo(
+            "No market snapshot found for the source/destination regions. "
+            "Run ingest-orders for both first."
+        )
+        return
+    if not results:
+        typer.echo("No haul opportunities met the filters.")
+        return
+
+    typer.echo(_format_haul_table(results))
+
+
+def _format_haul_table(results: list[HaulResult]) -> str:
+    rows = [
+        (
+            str(result.type_id),
+            result.type_name,
+            f"{result.source_price:,.2f}",
+            f"{result.dest_price:,.2f}",
+            str(result.quantity),
+            f"{result.total_volume_m3:,.2f}",
+            f"{result.unit_profit:,.2f}",
+            f"{result.total_profit:,.2f}",
+            f"{result.roi * 100:,.2f}",
+            f"{result.profit_per_m3:,.2f}",
+            f"{result.daily_volume:,.2f}",
+            f"{result.days_to_sell:,.2f}",
+        )
+        for result in results
+    ]
+    headers = (
+        "type_id",
+        "type_name",
+        "source",
+        "dest",
+        "qty",
+        "total_m3",
+        "unit_profit",
+        "total_profit",
+        "roi%",
+        "profit/m3",
+        "daily_vol",
+        "days_to_sell",
+    )
+    widths = [
+        max(len(headers[index]), *(len(row[index]) for row in rows))
+        for index in range(len(headers))
+    ]
+    lines = [
+        (
+            f"{headers[0]:>{widths[0]}}  {headers[1]:<{widths[1]}}  "
+            f"{headers[2]:>{widths[2]}}  {headers[3]:>{widths[3]}}  "
+            f"{headers[4]:>{widths[4]}}  {headers[5]:>{widths[5]}}  "
+            f"{headers[6]:>{widths[6]}}  {headers[7]:>{widths[7]}}  "
+            f"{headers[8]:>{widths[8]}}  {headers[9]:>{widths[9]}}  "
+            f"{headers[10]:>{widths[10]}}  {headers[11]:>{widths[11]}}"
+        )
+    ]
+    for row in rows:
+        lines.append(
+            (
+                f"{row[0]:>{widths[0]}}  {row[1]:<{widths[1]}}  "
+                f"{row[2]:>{widths[2]}}  {row[3]:>{widths[3]}}  "
+                f"{row[4]:>{widths[4]}}  {row[5]:>{widths[5]}}  "
+                f"{row[6]:>{widths[6]}}  {row[7]:>{widths[7]}}  "
+                f"{row[8]:>{widths[8]}}  {row[9]:>{widths[9]}}  "
+                f"{row[10]:>{widths[10]}}  {row[11]:>{widths[11]}}"
             )
         )
     return "\n".join(lines)
