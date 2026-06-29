@@ -481,7 +481,7 @@ _(Append new entries below — next: M9c.)_
 - Verification: PASS; source/default hub resolution, required dest params, no-snapshot message, filter-empty message, limit-one table, formatted ISK/ROI columns covered with hermetic tmp fixtures.
 - Deviations: used bundled Python abs path; bare `python` known unavailable. No live run/network; CLI tests use tmp DuckDB/parquet/SDE fixtures only. Did not touch/stage unrelated `HANDOFF_ARCHIVE.md`.
 - Questions: none.
-- Commit: pending.
+- Commit: `c8bae2d`.
 
 ## 9. Open Questions / Blockers
 
