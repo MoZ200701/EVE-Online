@@ -7,6 +7,7 @@ from pathlib import Path
 
 import duckdb
 
+from evemarket.analytics.backtest import PricePoint
 from evemarket.analytics.haul import HaulQuote
 from evemarket.analytics.station_trade import MarketQuote
 from evemarket.config import Config
@@ -126,6 +127,34 @@ def read_haul_quotes(
             daily_volume=volumes.get(type_id, 0.0),
         )
         for type_id in type_ids
+    ]
+
+
+def read_price_series(
+    config: Config,
+    region_id: int,
+    type_id: int,
+) -> list[PricePoint]:
+    """Read chronological daily reference prices for one region/type."""
+    data_dir = config.data_dir.expanduser()
+    market_path = data_dir / "market.duckdb"
+
+    with ensure_market_db(market_path) as connection:
+        rows = connection.execute(
+            f"""
+            SELECT date, average
+            FROM {MARKET_HISTORY_TABLE}
+            WHERE region_id = ?
+              AND type_id = ?
+              AND average IS NOT NULL
+            ORDER BY date ASC
+            """,
+            [region_id, type_id],
+        ).fetchall()
+
+    return [
+        PricePoint(date=row_date.isoformat(), price=float(average))
+        for row_date, average in rows
     ]
 
 

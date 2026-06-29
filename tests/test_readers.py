@@ -4,10 +4,12 @@ from pathlib import Path
 import duckdb
 import pytest
 
+from evemarket.analytics.backtest import PricePoint, naive_persistence_forecast
 from evemarket.analytics.haul import scan_haul_opportunities
 from evemarket.analytics.station_trade import scan_station_trades
+from evemarket.analytics.walkforward import run_forecaster_backtest
 from evemarket.config import Config
-from evemarket.store.readers import read_haul_quotes, read_station_quotes
+from evemarket.store.readers import read_haul_quotes, read_price_series, read_station_quotes
 from evemarket.store.schema import ensure_market_db
 from evemarket.store.writers import record_ingest_run, write_orders_snapshot
 
@@ -268,6 +270,80 @@ def test_read_haul_quotes_rejects_bad_volume_window(tmp_path: Path) -> None:
         )
 
 
+def test_read_price_series_returns_chronological_average_prices(tmp_path: Path) -> None:
+    _write_price_history(
+        tmp_path,
+        [
+            (REGION_ID, 34, date(2026, 1, 3), 130.0, 150.0, 100.0, 13, 3000),
+            (REGION_ID, 34, date(2026, 1, 1), 110.0, 140.0, 90.0, 11, 1000),
+            (REGION_ID, 34, date(2026, 1, 2), 120.0, 145.0, 95.0, 12, 2000),
+        ],
+    )
+
+    series = read_price_series(Config(data_dir=tmp_path), REGION_ID, 34)
+
+    assert series == [
+        PricePoint(date="2026-01-01", price=110.0),
+        PricePoint(date="2026-01-02", price=120.0),
+        PricePoint(date="2026-01-03", price=130.0),
+    ]
+
+
+def test_read_price_series_excludes_null_average_rows(tmp_path: Path) -> None:
+    _write_price_history(
+        tmp_path,
+        [
+            (REGION_ID, 34, date(2026, 1, 1), 110.0, 140.0, 90.0, 11, 1000),
+            (REGION_ID, 34, date(2026, 1, 2), None, 145.0, 95.0, 12, 2000),
+            (REGION_ID, 34, date(2026, 1, 3), 130.0, 150.0, 100.0, 13, 3000),
+        ],
+    )
+
+    series = read_price_series(Config(data_dir=tmp_path), REGION_ID, 34)
+
+    assert [point.date for point in series] == ["2026-01-01", "2026-01-03"]
+    assert [point.price for point in series] == [110.0, 130.0]
+
+
+def test_read_price_series_returns_empty_for_unknown_type_region_and_empty_db(
+    tmp_path: Path,
+) -> None:
+    _write_price_history(
+        tmp_path,
+        [(REGION_ID, 34, date(2026, 1, 1), 110.0, 140.0, 90.0, 11, 1000)],
+    )
+    empty_dir = tmp_path / "empty"
+    empty_dir.mkdir()
+    with ensure_market_db(empty_dir / "market.duckdb"):
+        pass
+
+    assert read_price_series(Config(data_dir=tmp_path), REGION_ID, 99999) == []
+    assert read_price_series(Config(data_dir=tmp_path), DEST_REGION_ID, 34) == []
+    assert read_price_series(Config(data_dir=empty_dir), REGION_ID, 34) == []
+
+
+def test_read_price_series_feeds_walkforward_engine(tmp_path: Path) -> None:
+    _write_price_history(
+        tmp_path,
+        [
+            (REGION_ID, 34, date(2026, 1, 1), 110.0, 140.0, 90.0, 11, 1000),
+            (REGION_ID, 34, date(2026, 1, 2), 120.0, 145.0, 95.0, 12, 2000),
+            (REGION_ID, 34, date(2026, 1, 3), 130.0, 150.0, 100.0, 13, 3000),
+        ],
+    )
+
+    series = read_price_series(Config(data_dir=tmp_path), REGION_ID, 34)
+    outcomes = run_forecaster_backtest(
+        series,
+        naive_persistence_forecast,
+        Config(),
+        horizon=1,
+        warmup=1,
+    )
+
+    assert outcomes == []
+
+
 def _write_snapshot(
     data_dir: Path,
     snapshot_ts: datetime,
@@ -333,6 +409,22 @@ def _write_history(data_dir: Path, region_id: int) -> None:
                 (region_id, 34, date(2026, 6, 27), 100.0, 130.0, 90.0, 10, 1000),
                 (region_id, 34, date(2026, 6, 28), 100.0, 130.0, 90.0, 10, 2000),
             ],
+        )
+
+
+def _write_price_history(
+    data_dir: Path,
+    rows: list[tuple[int, int, date, float | None, float, float, int, int]],
+) -> None:
+    with ensure_market_db(data_dir / "market.duckdb") as connection:
+        connection.executemany(
+            """
+            INSERT INTO market_history (
+                region_id, type_id, date, average, highest, lowest, order_count, volume
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            rows,
         )
 
 
