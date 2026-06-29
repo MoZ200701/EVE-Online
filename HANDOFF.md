@@ -548,7 +548,7 @@ _(Append new entries below — next: M10a.)_
 - Verification: PASS; optional `[ui]` extra, Streamlit package marker/script, empty snapshot state, happy-path dataframe, filter-empty state covered with hermetic AppTest tmp fixtures.
 - Deviations: AppTest 1.58 cannot set keyed widget values before first run; used pre-seeded `session_state` for `config_path`/`min_roi` so first run is hermetic. Mypy reports 26 source files, not 25, because both `ui/__init__.py` and `ui/app.py` are new under `src/`. No `streamlit.*` mypy override needed.
 - Questions: none.
-- Commit: pending.
+- Commit: `788d295`.
 
 ## 9. Open Questions / Blockers
 
