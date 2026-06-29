@@ -561,7 +561,7 @@ _(Append new entries below — next: M10b.)_
 - Verification: PASS; existing 3 station tests unchanged + green; dest prompt, haul happy-path dataframe, missing dest snapshot, filter-empty states covered with hermetic two-region AppTest fixtures.
 - Deviations: `st.dataframe` string repr truncates middle columns; happy-path asserts `days_to_sell` haul-only column instead of both `days_to_sell` and hidden `total_profit`. Removed fresh `.pytest-tmp-m10b*` dirs after tests; pre-existing `.pytest-tmp2/` remains permission-denied and unstaged.
 - Questions: none.
-- Commit: pending.
+- Commit: `96d74da`.
 
 ## 9. Open Questions / Blockers
 
