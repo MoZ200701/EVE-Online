@@ -64,7 +64,7 @@ src/evemarket/: __init__.py  config.py  cli.py
   sde/{__init__,load}.py
   ingest/{__init__,orders,history,prices,backfill}.py
   store/{__init__,schema,writers,quality,readers}.py   # readers.py added M8b (planner sign-off 2026-06-28)
-  analytics/{__init__,fees,opportunity,station_trade,haul}.py
+  analytics/{__init__,fees,opportunity,station_trade,haul,backtest}.py   # backtest.py added P3-0a (planner sign-off 2026-06-29, pure leaf module)
   ui/{__init__,app}.py   # streamlit dashboard, added M10 (planner sign-off 2026-06-29, optional [ui] extra)
 tests/
 ```
@@ -73,7 +73,7 @@ tests/
 
 **Phase 1 — data pipeline**
 - M0 Scaffold ✅ | M1 SDE→`sde.duckdb` ✅ | REPO git+push ✅ | M2 ESI client ✅ | M3 Order snapshots + `ingest_runs` ✅ | M4a ESI daily history → `market_history` ✅ | M4b everef.net bulk backfill ✅ | M5a ESI prices → `market_prices` ✅
-- **M5** Prices ✅ | scheduler (M5b) ✅ | data-quality (M5c) ✅ | M5-FIX mypy-clean ✅ — **Phase 1 COMPLETE & to-standard.** | M6 `analytics/fees.py` ✅ `2cee47b` | M7 `analytics/opportunity.py` seam ✅ `46261d0` | M8a `station_trade.py` ranking core ✅ `29f7a9c` | M8b `store/readers.py` DuckDB reader ✅ `55d5a3e` | M8c CLI `scan` ✅ `0bf9a99`. M9 `analytics/haul.py` regional arbitrage — M9a pure core ✅ `ab937a9` → M9b cross-region reader ✅ `81148ea` → M9c CLI `haul` ✅ `c8bae2d`. **Phase-2 scanners (station-trade + haul) COMPLETE end-to-end.** ← **CURRENT/NEXT: M10 Streamlit dashboard (not yet scoped).**
+- **M5** Prices ✅ | scheduler (M5b) ✅ | data-quality (M5c) ✅ | M5-FIX mypy-clean ✅ — **Phase 1 COMPLETE & to-standard.** | M6 `analytics/fees.py` ✅ `2cee47b` | M7 `analytics/opportunity.py` seam ✅ `46261d0` | M8a `station_trade.py` ranking core ✅ `29f7a9c` | M8b `store/readers.py` DuckDB reader ✅ `55d5a3e` | M8c CLI `scan` ✅ `0bf9a99`. M9 `analytics/haul.py` regional arbitrage — M9a pure core ✅ `ab937a9` → M9b cross-region reader ✅ `81148ea` → M9c CLI `haul` ✅ `c8bae2d`. **Phase-2 scanners (station-trade + haul) COMPLETE end-to-end.** M10 Streamlit dashboard — M10a skeleton+station panel ✅ `788d295` → M10b haul panel ✅ `96d74da`. **M10 COMPLETE (both scanners in one browser view).** ← **CURRENT/NEXT: Phase 3 (P3-0 backtest harness) — needs planner scoping + ML-dep sign-off; NOT started.**
 
 **Phase 2 — deterministic analytics (stubbed):** `fees.py` ✅, `opportunity.py` ✅, `station_trade.py` (first scanner — **decomposed: M8a pure ranking ✅ → M8b DuckDB reader ✅ → M8c CLI ✅**), then `haul.py` (**decomposed: M9a pure core ✅ → M9b cross-region reader → M9c CLI `haul`**).
 
@@ -81,7 +81,7 @@ tests/
 
 **Phase 3 — forecasting & long-hold (position) trading** *(committed 2026-06-28; honest-backtest-first; starts only after Phase 2 scanners land — no jumping ahead).*
 Goal: predict forward price/return over a **multi-week horizon** (target ~2–6 wks, configurable — covers "buy and hold a month+") and surface backtested long-hold suggestions via the existing `ProfitOpportunity` seam (a hold = a `Disposal` at a *predicted future* price). Trained **locally** on EVE history (GBM / time-series per §3), NOT LLM.
-- **P3-0 Backtest harness FIRST (the gate):** walk-forward, strict out-of-sample, point-in-time (no lookahead/survivorship), realistic fills + reuse M6 fees. Baselines = naive persistence, seasonal-naive, buy-&-hold item, hold-ISK. Metrics: directional hit rate, **risk-adjusted expectancy (ISK/trade net fees)**, profit factor, max drawdown, return vs each baseline, sample size/significance. Nothing downstream is trusted until this exists.
+- **P3-0 Backtest harness FIRST (the gate):** walk-forward, strict out-of-sample, point-in-time (no lookahead/survivorship), realistic fills + reuse M6 fees. Baselines = naive persistence, seasonal-naive, buy-&-hold item, hold-ISK. Metrics: directional hit rate, **risk-adjusted expectancy (ISK/trade net fees)**, profit factor, max drawdown, return vs each baseline, sample size/significance. Nothing downstream is trusted until this exists. **Decomposed (2026-06-29): P3-0a pure metrics `analytics/backtest.py` (active) → P3-0b PIT series + baselines + walk-forward engine → P3-0c `market_history` reader + `backtest` CLI. NO new deps in P3-0 (existing stack + M6 fees); ML-dep sign-off is a separate P3-2 gate.**
 - **P3-1 Feature pipeline:** point-in-time features (returns, realized vol, volume/liquidity trends, rolling stats, calendar/seasonality, spread). Zero future leakage.
 - **P3-2 Forecast model:** horizon-return forecaster with probability/confidence; trained + persisted locally.
 - **P3-3 Position-trade scanner:** forecasts → ranked long-hold opportunities (future-priced `Disposal`), gated by backtested edge + confidence, shown WITH downside/uncertainty.
@@ -96,9 +96,67 @@ Goal: predict forward price/return over a **multi-week horizon** (target ~2–6 
 
 Definition of done is per-step in each task prompt.
 
-## 6. Current Task (Codex) — ▶ M10b ACTIVE
+## 6. Current Task (Codex) — ▶ P3-0a ACTIVE
 
-**STATUS: M10a DONE (`788d295`, docs `0a531e4`) — station-trade dashboard panel live, reviewed DONE (§7). EXECUTE the M10b pack directly below: ADD the haul panel to the SAME `ui/app.py` so the one dashboard shows BOTH scanners → completes M10. The `<details>` packs further down (M9c/M9b/M8c) are FINISHED references — do NOT execute them.**
+**STATUS: M10 COMPLETE (`96d74da`). Phase 3 has begun. P3-0 (backtest harness — the GATE, §5) is decomposed: P3-0a pure metrics primitives → P3-0b PIT series + baselines + walk-forward engine → P3-0c history reader + `backtest` CLI. EXECUTE the P3-0a pack directly below. The `<details>` packs (M10b/M9c/M9b/M8c) are FINISHED references — do NOT execute them. NOTE: P3-0 uses NO new deps (existing stack + M6 fees); ML-dep sign-off is a SEPARATE gate at P3-2 — do NOT add any ML/stats library here.**
+
+### P3-0a — pure backtest metrics primitives (`analytics/backtest.py`)
+
+The measurement/scoring layer for all of Phase 3 — the literal definition of the §5 success bar ("risk-adjusted expectancy net of fees", hit rate, profit factor, drawdown, sample size/significance). This is the GATE's ruler: everything downstream (baselines, forecasts) reports into these numbers. **Pure, self-contained, zero I/O / no forecasting / no walk-forward** (those are P3-0b). *We define the input shape* here (a chronological list of per-trade outcomes), so P3-0a has ZERO dependency on the store schema or M6 — same pattern as M8a/M9a "define the input row, stay pure." Stdlib only (`math`, `statistics`); **no new deps**.
+
+**New-workflow note:** read the **To gather** files for the exact frozen-dataclass + `ValueError`-validation idiom to mirror; write only the files in scope. Anything that changes this design → STOP + §9.
+
+### CONTEXT PACK
+
+**Files in scope (write only these):**
+- CREATE `src/evemarket/analytics/backtest.py` — the pure metrics module (dataclasses + metric functions + aggregator).
+- CREATE `tests/test_backtest.py`.
+- EDIT `HANDOFF.md` §8 (log).
+- Do NOT touch any other file (no reader, no CLI, no config, no engine yet).
+
+**To gather (read yourself — do not edit):**
+- `src/evemarket/analytics/station_trade.py` — mirror the module idiom EXACTLY: module docstring, `from __future__ import annotations`, `collections.abc` typing imports (use `Sequence` here), `@dataclass(frozen=True)` with a one-line docstring, keyword-only args after `*`, and the `ValueError` validation style (e.g. how `scan_station_trades` raises on bad thresholds). `analytics/haul.py` for a second example of the same conventions if useful.
+
+**Caller contracts:** none — this module is a leaf (stdlib only). It does NOT import `Config`, fees, readers, or anything from `evemarket`.
+
+**Deliverable — `src/evemarket/analytics/backtest.py`:**
+- `@dataclass(frozen=True) class TradeOutcome` — one realized backtest trade:
+  - `net_isk: float` — the trade's profit/loss **already net of M6 fees** (the engine fee-adjusts upstream; P3-0a only aggregates).
+  - `correct_direction: bool` — did the forecast's predicted direction match the realized move (for hit rate).
+  - (Outcomes are passed to metrics as a **chronological** `Sequence[TradeOutcome]` — order matters for the drawdown equity curve.)
+- `@dataclass(frozen=True) class BacktestMetrics` — the scorecard:
+  - `sample_size: int`, `hit_rate: float`, `expectancy: float`, `profit_factor: float`, `max_drawdown: float`, `total_net_isk: float`, `expectancy_t_stat: float`.
+- Pure metric functions over `Sequence[TradeOutcome]` (each raises `ValueError` on an EMPTY sequence — they are only called with ≥1 trade; the aggregator guards n=0):
+  - `directional_hit_rate(outcomes) -> float` — fraction with `correct_direction` True (0.0–1.0).
+  - `expectancy_per_trade(outcomes) -> float` — mean `net_isk` (THE binding metric per §5).
+  - `profit_factor(outcomes) -> float` — `sum(net_isk>0) / abs(sum(net_isk<0))`; **all-wins (zero gross loss) → `float("inf")`**; all-losses → `0.0`.
+  - `max_drawdown(outcomes) -> float` — worst peak-to-trough drop of the cumulative `net_isk` equity curve (running peak − running value), returned as a **non-negative** ISK magnitude; `0.0` if monotonically non-decreasing. (Equity starts at 0 before the first trade.)
+  - `total_net_isk(outcomes) -> float` — `sum(net_isk)`.
+  - `expectancy_t_stat(outcomes) -> float` — one-sample t-stat of `net_isk` vs 0: `mean / (stdev / sqrt(n))` using `statistics.stdev`; **n < 2 or zero variance → `0.0`** (undefined significance; honest neutral). Stdlib only — NO scipy.
+- `compute_metrics(outcomes: Sequence[TradeOutcome]) -> BacktestMetrics` — the aggregator; the ONLY function that accepts an empty sequence:
+  - **n == 0** (full abstention is first-class per §5): return `BacktestMetrics(sample_size=0, hit_rate=nan, expectancy=nan, profit_factor=nan, max_drawdown=0.0, total_net_isk=0.0, expectancy_t_stat=nan)` (use `float("nan")`; do NOT raise).
+  - **n ≥ 1**: call the functions above and pack the scorecard.
+
+**Conventions to mirror:** frozen dataclasses w/ docstrings; `from __future__ import annotations`; full type hints; `Sequence` from `collections.abc`; named module-level constants if any thresholds appear; pure (no I/O, no `evemarket` imports, no `Config`); stdlib `math`/`statistics` only; **no new deps**; terse.
+
+**Boundary** — write only the 2 files (+ §8). NO reader, NO CLI, NO baselines, NO walk-forward, NO forecasting — those are P3-0b/P3-0c. Do NOT import `Config`/fees/readers. "Return vs baseline" comparison is a trivial expectancy subtraction the report does later — NOT in 0a. Anything that changes this design → STOP + §9.
+
+**Verification (paste §8, terse per §2) — tests are PURE (hand-computed expected values, NO fixtures/network):**
+- Use a hand-worked dataset, e.g. `net_isk = [+100, -40, +60, -20]`, `correct_direction = [T, F, T, F]`:
+  - `total_net_isk == 100.0`; `expectancy_per_trade == 25.0`; `directional_hit_rate == 0.5`.
+  - `profit_factor == 160/60` (≈ `2.6667`, assert with tolerance).
+  - `max_drawdown == 40.0` — equity curve `0→100→60→120→100`, running peak `100/100/120/120`, drawdowns `0/40/0/20` → max `40.0`. (Add a monotonic-up case → `0.0`.)
+  - `expectancy_t_stat`: assert finite and `> 0` for this net-positive set (don't hard-pin the float).
+- Edge cases: `profit_factor` all-positive → `float("inf")`; all-negative → `0.0`. `expectancy_t_stat` with n==1 → `0.0`; with all-equal net_isk (zero variance) → `0.0`.
+- `compute_metrics([])` → `sample_size == 0`, `max_drawdown == 0.0`, `total_net_isk == 0.0`, and `math.isnan(hit_rate)`/`isnan(expectancy)`/`isnan(profit_factor)`/`isnan(expectancy_t_stat)`.
+- Each individual metric function on `[]` → `pytest.raises(ValueError)`.
+- `python -m pytest -q` (bundled-Python abs path `C:\Users\M0obo\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe`; AppData temp denied → `--basetemp` at a FRESH dir, e.g. `.pytest-tmp-p30a`). Prior **97 passed, 1 skipped** stays green + new pass.
+- `python -m ruff check .` → clean. `python -m mypy src/` → clean (now **27** source files: `analytics/backtest.py` added).
+- Pre-commit `git status --short`: only `src/evemarket/analytics/backtest.py`, `tests/test_backtest.py`, `HANDOFF.md` (untracked `HANDOFF_ARCHIVE.md` + `.pytest-tmp*/` are unrelated — do NOT stage them); no `data/`/`*.duckdb`/parquet. Commit `feat: pure backtest metrics primitives (P3-0a)`; `git push origin main` (no force). Include `HANDOFF.md`.
+
+When done: append §8 entry (terse, **INCLUDE the commit hash + the module idiom you mirrored from `station_trade.py`**) and STOP. After P3-0a → **P3-0b** (PIT history series shape + baseline forecasters [naive persistence, seasonal-naive, buy-&-hold item, hold-ISK] + walk-forward engine that produces `TradeOutcome`s using realistic fills + M6 fees, scored via `compute_metrics`).
+
+<details><summary>Completed — M10b: haul panel in the Streamlit dashboard (reference)</summary>
 
 ### M10b — haul panel in the Streamlit dashboard (completes M10)
 
@@ -157,6 +215,8 @@ Second/final M10 slice. ADD a **Hauling** section to the existing `ui/app.py` (b
 - Pre-commit `git status --short`: only `src/evemarket/ui/app.py`, `tests/test_ui_app.py`, `HANDOFF.md` (untracked `HANDOFF_ARCHIVE.md` is an unrelated planner doc — do NOT stage it); no `data/`/`*.duckdb`/parquet/`.pytest-tmp*`. Commit `feat: haul panel in Streamlit dashboard (M10b)`; `git push origin main` (no force). Include `HANDOFF.md`.
 
 When done: append §8 entry (terse, **INCLUDE the commit hash + what you gathered from `haul_command`/the M10a app**) and STOP. After M10b → **M10 COMPLETE** (both scanners in one dashboard). Optional non-blocking follow-ups for later (do NOT do now): `,.2f` column formatting via `st.column_config`, `st.cache_data`, a data-freshness indicator. Next milestone is Phase 3 (P3-0 backtest harness) — needs planner scoping + ML-dep sign-off, do NOT start.
+
+</details>
 
 ---
 
@@ -388,6 +448,8 @@ When done: append §8 entry (terse, **INCLUDE the commit hash + what you gathere
 - **Deferred (non-blocking, M0):** switch `Config`/`SkillConfig` `BaseSettings`→`BaseModel` so TOML is sole config source (BaseSettings allows silent env-var overrides). Small future task. (Also tracked §9.)
 
 **Recent verdicts:**
+- **Phase 3 STARTED; P3-0 decomposed; P3-0a drafted (Context Pack).** M10 complete → next milestone is P3-0, the backtest harness GATE (§5: nothing downstream is trusted until it exists). Split **P3-0a pure metrics → P3-0b PIT series + baselines + walk-forward engine → P3-0c history reader + `backtest` CLI** (mirrors M8/M9: pure core → engine → reader/CLI). **Key boundary call:** P3-0 needs NO new deps (existing polars/duckdb/stdlib + M6 fees) — the ML-dep sign-off (§5/§7 "no new deps") is a SEPARATE gate at **P3-2** (the forecast model), so P3-0a proceeds without blocking on it; Codex is explicitly told NOT to add any ML/stats lib (t-stat via stdlib `statistics`, not scipy). P3-0a = `analytics/backtest.py` (planner-signed-off addition to §4 analytics layout, mirrors station_trade.py/haul.py — pure leaf module). Design: *we define the input shape* (`TradeOutcome{net_isk (already fee-net), correct_direction}`, chronological `Sequence` — order matters for drawdown) so 0a is fully self-contained/pure with ZERO store/M6/Config dependency (M8a/M9a pattern). Metrics encode the §5 success bar: `expectancy_per_trade` (THE binding metric — ISK/trade net fees), `directional_hit_rate` (the >50% sanity floor, NOT the goal), `profit_factor`, `max_drawdown` (equity-curve peak-to-trough), `total_net_isk`, `expectancy_t_stat` (honest significance via stdlib, n<2/zero-var → 0.0), packed by `compute_metrics` which alone accepts n=0 → all-nan/`sample_size=0` (**abstention is first-class** per §5 — full abstain is a valid, non-raising result, not an error). "Return vs baseline" deferred to the report layer (trivial expectancy subtraction once baselines land in P3-0b). Review focus on return: hand-computed metrics ([+100,-40,+60,-20] → expectancy 25 / hit 0.5 / PF 160/60 / maxDD 40 / total 100), profit_factor inf (all-wins) & 0.0 (all-losses) sentinels, t-stat n=1/zero-var → 0.0, `compute_metrics([])` nan-scorecard (no raise) vs individual funcs raising `ValueError` on empty, pure (no I/O / no `evemarket` imports), no new deps, only 2 files+HANDOFF, mypy(27 files)/ruff clean, commit hash §8.
+- **M10b REVIEW: DONE — M10 COMPLETE, both scanners in one dashboard.** `ui/app.py` haul panel + `tests/test_ui_app.py` haul tests match the pack. Reviewer re-ran locally (fresh `--basetemp`) → **97 passed, 1 skipped** (prior 93 + 4 new haul), ruff clean, mypy clean (**26** files — only `app.py` edited, no new module). Verified: imports added (`HaulResult, scan_haul_opportunities` from analytics.haul; `read_haul_quotes` added to the readers import); `_result_rows` widened to `list[StationTradeResult] | list[HaulResult]` (asdict works for both — no duplicated logic); 4 new keyed sidebar inputs (`dest_region`/`dest_station` default `0`, `min_total_profit`, `max_days_to_sell`); **dest gate** `int(dest_region)<=0 or int(dest_station)<=0` → "Enter a destination…" + skip read (the load-bearing default that keeps the haul panel from rendering a dataframe when dest unset → M10a's `len(at.dataframe)==1` station test stays green); **`max_days_to_sell` trap handled** (`md = max_days_to_sell if >0 else None` — never passes `0.0` which would raise); `read_haul_quotes(source=resolved station-panel region/station, dest, volume_window_days=)` → `scan_haul_opportunities(min_roi/min_total_profit/min_daily_volume/max_days_to_sell/limit)` → caption `Source: r/s  Dest: r/s  Quotes: n`; both haul empty-state strings verbatim from `haul_command`; `st.dataframe(_result_rows(haul_results))`. **Station section untouched.** Pure presentation, no analytics/I-O, no new deps, source hub reuses the station widgets, shared filters not duplicated. Tests hermetic (two-region tmp fixtures, dest history): dest-prompt, happy-path (source 34 ask-only + dest 34 bid-only → only the haul table renders, disambiguated by the `days_to_sell` column, `len==1`), missing-dest-snapshot, filter-excludes-all; existing 3 station tests unchanged + green. Git `96d74da` + docs `504ef8b`; scoped files only, no `data/`. **Minor (non-blocking), both fine:** (a) happy-path asserts the `days_to_sell` haul-only column (st.dataframe's str repr truncates middle cols) — sufficient to disambiguate from a station table; (b) Codex cleaned up its fresh `.pytest-tmp-m10b*` dirs; the pre-existing untracked `.pytest-tmp2/` (a prior reviewer-run scratch dir, perm-denied to delete) remains unstaged — harmless, not in any commit. **M10 Streamlit dashboard COMPLETE end-to-end (station-trade + haul in one browser view).**
 - **M10a REVIEW: DONE — first browser surface is live.** `pyproject.toml` `[ui]` extra + `ui/__init__.py` + `ui/app.py` + `tests/test_ui_app.py` match the pack. Reviewer re-ran locally (fresh `--basetemp` to dodge the Windows `.pytest-tmp` reuse PermissionError) → **93 passed, 1 skipped** (prior 90 + 3 new UI), ruff clean, mypy clean (**26** files); the 3 AppTest tests genuinely RAN (streamlit 1.58.0 installed via `[ui]`, not skipped). Verified: `[ui]=["streamlit"]` optional, streamlit absent from core deps; `app.py` is pure `scan_command` read→scan wiring (`load_config`→`read_station_quotes`→`scan_station_trades`→`st.dataframe(list[dict])`), both empty-state strings mirrored verbatim, ZERO analytics/I-O of its own; no haul code (correctly held for M10b); keyed sidebar widgets so config path resolves region/station defaults AND AppTest can inject. Tests hermetic (tmp config/snapshot/market.duckdb/sde.duckdb): empty-state ("No market snapshot"), happy-path (34/Tritanium rendered, sell-only 35 skipped → exactly 1 dataframe), filter-excludes-all (min_roi=999 → "No station-trade opportunities"). Git `788d295` + docs `0a531e4`; exactly the 5 scoped files, no `data/`. **Deviations, both accepted:** (a) AppTest 1.58 can't set keyed widget values before the first run → tests pre-seed `session_state` (valid/cleaner idiom); (b) Codex corrected my pack's arithmetic — src is **26** files not 25 (both `ui/__init__.py` + `ui/app.py` new from a base of 24), and streamlit ships `py.typed` so NO `streamlit.*` mypy override was needed (pyproject got only the `[ui]` extra). Good catches, honestly logged. Dashboard station-trade panel to-standard → unblocks M10b. **Note for M10b:** the station happy-path test asserts `len(at.dataframe) == 1` — M10b's haul panel MUST default to no-dest (so it renders an info prompt, not a dataframe) or that assertion breaks; the existing 3 tests must stay green.
 - **M10 decomposed; M10a drafted (Context Pack) — first browser-visual milestone.** M10 (Streamlit dashboard) split **M10a packaging+skeleton+station-trade panel+AppTest harness → M10b haul panel** (one-step-at-a-time; the new `streamlit` dep + an unfamiliar `streamlit.testing.v1.AppTest` test harness is the risk M10a de-risks before doubling the panels). M10a scope: `pyproject.toml` `[ui]` extra (`streamlit`, optional — NOT core, honors "no new deps" via the §4/§5 sign-off) + `ui/__init__.py` + `ui/app.py` (the GUI twin of `scan_command`: sidebar config/region/station/filters → `read_station_quotes`→`scan_station_trades`→`st.dataframe`, with both empty-state messages mirrored) + `tests/test_ui_app.py`. **Pure presentation, zero analytics/I-O** (same discipline as the CLI commands — reuses readers/scanners as-is, no data-access layer, no wrapped math). Key design calls: (a) app reads config path from a keyed sidebar `text_input` so region/station defaults resolve from the loaded `Config` AND so AppTest can point it at a tmp config (hermetic, never touches repo `./data`); (b) fixture uses region `10000002`/station `60003760` = the `Config` defaults, so AppTest auto-resolves to fixture data without overriding widgets; (c) tests guarded by `pytest.importorskip("streamlit")` so the suite stays green when `[ui]` isn't installed — but Codex is told to INSTALL `[ui]` and RUN them (an unrun harness ≠ verified; skip-only → §9); (d) render via `st.dataframe(list[dict])` — no pandas (not a dep), polars acceptable; raw numerics (`,.2f` formatting deferred to M10b polish); (e) mypy `streamlit.*` → `ignore_missing_imports` if stubs missing (pyproject in scope; src now 25 files). Review focus on return: `[ui]` extra correct + streamlit absent from core deps; app is pure read→scan wiring (no analytics); both empty states + happy-path dataframe (34 shown, 35 sell-only skipped) + filter-empty via AppTest; tests actually RAN (not skipped); only the 5 scoped files touched, no `data/`; mypy(25)/ruff clean; commit hash §8. After M10a → M10b haul panel → M10 complete.
 - **M9c REVIEW: DONE & FINALIZED (`c8bae2d`, docs `0d8f328`) — M9 + Phase-2 scanners COMPLETE end-to-end.** Codex finalized cleanly: §8 logged with hash; commit touched exactly the 3 scoped files (`cli.py` +171, `tests/test_cli_haul.py` +301, `HANDOFF.md`), no `data/`/duckdb/parquet; untracked `HANDOFF_ARCHIVE.md` correctly left unstaged; tree now clean. §8 reconciles the minor test note I'd flagged: an earlier fixture seeded type 36 with NO SDE volume (relying on the reader `#tid` name-fallback) but the reader/scanner skips zero-volume items so the `--limit 1` row never rendered → Codex fixed it by giving type 36 explicit volume metadata (the passing version reviewed). Final state matches the earlier code review below.
@@ -414,7 +476,7 @@ When done: append §8 entry (terse, **INCLUDE the commit hash + what you gathere
 > Full per-task logs M0–M5-FIX archived in `HANDOFF_ARCHIVE.md` §C.
 > Template: `### M<n> — <title> — <date> — COMPLETE/BLOCKED` then: Files | Commands+result | Verification | Deviations | Questions.
 
-_(Append new entries below — next: M10b.)_
+_(Append new entries below — next: P3-0a.)_
 
 ### M6 — deterministic broker fee + sales tax — 2026-06-28 — COMPLETE
 - Files: `src/evemarket/analytics/fees.py`, `tests/test_fees.py`, `HANDOFF.md`.
@@ -562,6 +624,21 @@ _(Append new entries below — next: M10b.)_
 - Deviations: `st.dataframe` string repr truncates middle columns; happy-path asserts `days_to_sell` haul-only column instead of both `days_to_sell` and hidden `total_profit`. Removed fresh `.pytest-tmp-m10b*` dirs after tests; pre-existing `.pytest-tmp2/` remains permission-denied and unstaged.
 - Questions: none.
 - Commit: `96d74da`.
+
+### P3-0a - pure backtest metrics primitives - 2026-06-29 - COMPLETE
+- Files: `src/evemarket/analytics/backtest.py`, `tests/test_backtest.py`, `HANDOFF.md`.
+- Gathered/read: `src/evemarket/analytics/station_trade.py` frozen dataclass/module style + `ValueError` validation; `src/evemarket/analytics/haul.py` second dataclass/validation example.
+- Commands+result:
+  - `C:\Users\M0obo\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe -m pytest tests\test_backtest.py -q --basetemp .pytest-tmp-p30a` -> `11 passed, 1 warning` (pytest cache WinError 5 only).
+  - `C:\Users\M0obo\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe -m ruff check src\evemarket\analytics\backtest.py tests\test_backtest.py` -> `All checks passed!`
+  - `C:\Users\M0obo\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe -m pytest -q --basetemp .pytest-tmp-p30a-full` -> `108 passed, 1 skipped, 1 warning` (pytest cache WinError 5 only).
+  - `C:\Users\M0obo\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe -m ruff check .` -> two access-denied warnings + `All checks passed!`
+  - `C:\Users\M0obo\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe -m mypy src/` -> `Success: no issues found in 27 source files`
+  - `git status --short` -> scoped files + unrelated untracked `HANDOFF_ARCHIVE.md`; pre-existing `.pytest-tmp-rev/` and `.pytest-tmp2/` permission warnings; no new `data/`/duckdb/parquet.
+- Verification: PASS; hand-worked metrics, drawdown, profit-factor edges, t-stat undefined cases, empty aggregate abstention, individual empty-input `ValueError` paths covered. Module is pure stdlib; no `evemarket` imports/no config/readers/fees.
+- Deviations: fresh `.pytest-tmp-p30a*` dirs removed after tests; pre-existing `.pytest-tmp-rev/` and `.pytest-tmp2/` remain permission-denied and unstaged. `profit_factor` returns `inf` whenever gross loss is zero, including zero-only sequences; no separate zero-only behavior specified.
+- Questions: none.
+- Commit: pending.
 
 ## 9. Open Questions / Blockers
 
