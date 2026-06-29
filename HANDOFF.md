@@ -638,7 +638,7 @@ _(Append new entries below — next: P3-0a.)_
 - Verification: PASS; hand-worked metrics, drawdown, profit-factor edges, t-stat undefined cases, empty aggregate abstention, individual empty-input `ValueError` paths covered. Module is pure stdlib; no `evemarket` imports/no config/readers/fees.
 - Deviations: fresh `.pytest-tmp-p30a*` dirs removed after tests; pre-existing `.pytest-tmp-rev/` and `.pytest-tmp2/` remain permission-denied and unstaged. `profit_factor` returns `inf` whenever gross loss is zero, including zero-only sequences; no separate zero-only behavior specified.
 - Questions: none.
-- Commit: pending.
+- Commit: `9e32b68`.
 
 ## 9. Open Questions / Blockers
 
