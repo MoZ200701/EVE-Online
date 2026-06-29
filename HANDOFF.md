@@ -784,6 +784,24 @@ _(Append new entries below — next: P3-0c. P3-0b/P3-0a entries are below.)_
 - Verification: PASS; `PricePoint`/`Forecast`, naive persistence, seasonal-naive index, up/down/flat directions, empty/invalid horizon/invalid season/too-short `ValueError` cases covered. Module remains stdlib-only; no `evemarket` imports/no config/readers/fees/engine.
 - Deviations: corrected initial seasonal test expectation after focused failure; removed fresh `.pytest-tmp-p30b-full/`; pre-existing permission-denied temp dirs remain unstaged.
 - Questions: none.
+- Commit: `ce4bf76`.
+
+### P3-0c - walk-forward backtest engine - 2026-06-29 - COMPLETE
+- Files: `src/evemarket/analytics/walkforward.py`, `tests/test_walkforward.py`, `HANDOFF.md`.
+- Gathered/read: `src/evemarket/analytics/backtest.py` (`PricePoint`, `Forecast`, `TradeOutcome`, `compute_metrics`, `naive_persistence_forecast`, `seasonal_naive_forecast`); `src/evemarket/analytics/haul.py` M9a reuse idiom = build one `station_trade_opportunity(...)`, read `.profit`, no fee formulas; `src/evemarket/analytics/opportunity.py` (`station_trade_opportunity`, `.profit` fee-net contract).
+- Commands+result:
+  - `git add src/evemarket/analytics/backtest.py tests/test_backtest.py HANDOFF.md` -> PASS.
+  - `git commit -m "feat: PIT price series + baseline forecasters (P3-0b)"` -> `ce4bf76`.
+  - `git push origin main` -> `4257704..ce4bf76 main -> main`.
+  - `C:\Users\M0obo\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe -m pytest tests\test_walkforward.py -q --basetemp .pytest-tmp-p30c` -> `8 passed, 1 warning` (pytest cache WinError 5 only).
+  - `C:\Users\M0obo\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe -m ruff check src\evemarket\analytics\walkforward.py tests\test_walkforward.py` -> `All checks passed!`
+  - `C:\Users\M0obo\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe -m pytest -q --basetemp .pytest-tmp-p30c-full` -> `127 passed, 1 skipped, 1 warning` (pytest cache WinError 5 only).
+  - `C:\Users\M0obo\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe -m ruff check .` -> four access-denied warnings + `All checks passed!`
+  - `C:\Users\M0obo\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe -m mypy src/` -> `Success: no issues found in 28 source files`
+  - `git status --short` -> scoped files + unrelated untracked `HANDOFF_ARCHIVE.md`; pre-existing `.pytest-tmp-rev/`, `.pytest-tmp-rev-p30b/`, `.pytest-tmp-rev2/`, `.pytest-tmp2/` permission warnings; no `data/`/duckdb/parquet.
+- Verification: PASS; fee-net realized profit cross-check via `station_trade_opportunity(...).profit`, PIT history windows, naive abstention + empty metrics, correct direction true/false + net signs, invalid bounds, no-window empty, seasonal wrapper end-to-end, buy-and-hold increasing/decreasing/short-series covered. No duplicated fee formulas.
+- Deviations: P3-0b Step 0 finalized first (`ce4bf76` pushed); P3-0c log commit hash filled after commit/push. Removed fresh `.pytest-tmp-p30c*`; pre-existing permission-denied temp dirs remain unstaged.
+- Questions: none.
 - Commit: pending.
 
 ## 9. Open Questions / Blockers
