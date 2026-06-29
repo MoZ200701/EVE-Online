@@ -25,6 +25,9 @@ dev = [
     "ruff",
     "mypy",
 ]
+ui = [
+    "streamlit",
+]
 
 [project.scripts]
 evemarket = "evemarket.cli:app"
