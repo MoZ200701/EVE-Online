@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Sequence
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -17,10 +18,26 @@ from evemarket.ingest.orders import ingest_orders
 from evemarket.ingest.prices import ingest_prices
 from evemarket.scheduler import build_scheduler
 from evemarket.sde.load import connect, download_sde, load_sde, table_counts
+from evemarket.analytics.backtest import (
+    BacktestMetrics,
+    compute_metrics,
+    Forecast,
+    naive_persistence_forecast,
+    PricePoint,
+    seasonal_naive_forecast,
+)
 from evemarket.analytics.haul import HaulResult, scan_haul_opportunities
 from evemarket.analytics.station_trade import StationTradeResult, scan_station_trades
+from evemarket.analytics.walkforward import (
+    buy_and_hold_outcomes,
+    run_forecaster_backtest,
+)
 from evemarket.store.quality import run_quality_checks
-from evemarket.store.readers import read_haul_quotes, read_station_quotes
+from evemarket.store.readers import (
+    read_haul_quotes,
+    read_price_series,
+    read_station_quotes,
+)
 from evemarket.store.schema import ensure_market_db
 
 app = typer.Typer(help="EVE Market Tool.")
@@ -608,6 +625,156 @@ def _format_haul_table(results: list[HaulResult]) -> str:
                 f"{row[6]:>{widths[6]}}  {row[7]:>{widths[7]}}  "
                 f"{row[8]:>{widths[8]}}  {row[9]:>{widths[9]}}  "
                 f"{row[10]:>{widths[10]}}  {row[11]:>{widths[11]}}"
+            )
+        )
+    return "\n".join(lines)
+
+
+@app.command("backtest")
+def backtest_command(
+    config: Path = typer.Option(
+        Path("config.toml"),
+        "--config",
+        "-c",
+        help="Path to a TOML configuration file.",
+    ),
+    region: int | None = typer.Option(
+        None,
+        "--region",
+        help="EVE region ID. Defaults to the first configured tracked region.",
+    ),
+    type: int = typer.Option(
+        34,
+        "--type",
+        min=1,
+        help="EVE type ID to backtest.",
+    ),
+    horizon: int = typer.Option(
+        7,
+        "--horizon",
+        min=1,
+        help="Forecast/hold horizon in days.",
+    ),
+    warmup: int = typer.Option(
+        30,
+        "--warmup",
+        min=1,
+        help="Minimum history before the first decision.",
+    ),
+    season_length: int = typer.Option(
+        7,
+        "--season-length",
+        min=1,
+        help="Seasonal-naive period.",
+    ),
+) -> None:
+    """Backtest baseline long-hold strategies against price history."""
+
+    loaded_config = load_config(config)
+    selected_region = region or loaded_config.tracked_regions[0]
+    if season_length > warmup:
+        raise typer.BadParameter(
+            "--warmup must be >= --season-length so the seasonal baseline "
+            "always has a full prior season."
+        )
+
+    series = read_price_series(loaded_config, selected_region, type)
+    typer.echo(
+        f"Region: {selected_region}  Type: {type}  Points: {len(series)}  "
+        f"Horizon: {horizon}  Warmup: {warmup}  Season: {season_length}"
+    )
+    if not series:
+        typer.echo(
+            f"No price history found for region {selected_region} type {type}. "
+            "Run ingest-history or backfill-history first."
+        )
+        return
+
+    def _seasonal(series: Sequence[PricePoint], *, horizon: int) -> Forecast:
+        return seasonal_naive_forecast(
+            series,
+            horizon=horizon,
+            season_length=season_length,
+        )
+
+    naive = run_forecaster_backtest(
+        series,
+        naive_persistence_forecast,
+        loaded_config,
+        horizon=horizon,
+        warmup=warmup,
+    )
+    seasonal = run_forecaster_backtest(
+        series,
+        _seasonal,
+        loaded_config,
+        horizon=horizon,
+        warmup=warmup,
+    )
+    buy_hold = buy_and_hold_outcomes(series, loaded_config)
+    rows = [
+        ("naive-persistence", compute_metrics(naive)),
+        ("seasonal-naive", compute_metrics(seasonal)),
+        ("buy-and-hold", compute_metrics(buy_hold)),
+    ]
+
+    typer.echo(_format_backtest_table(rows))
+    typer.echo(
+        "Reference: hold-ISK (do nothing) = 0.00 ISK/trade expectancy "
+        "(the abstention floor)."
+    )
+    clearing = [
+        label for label, metrics in rows if metrics.sample_size > 0 and metrics.expectancy > 0
+    ]
+    typer.echo(
+        "Baselines clearing the floor (expectancy > 0): "
+        + (", ".join(clearing) if clearing else "none")
+    )
+
+
+def _format_backtest_table(rows: list[tuple[str, BacktestMetrics]]) -> str:
+    table_rows = [
+        (
+            label,
+            str(metrics.sample_size),
+            f"{metrics.hit_rate * 100:,.2f}",
+            f"{metrics.expectancy:,.2f}",
+            f"{metrics.profit_factor:,.2f}",
+            f"{metrics.max_drawdown:,.2f}",
+            f"{metrics.total_net_isk:,.2f}",
+            f"{metrics.expectancy_t_stat:,.2f}",
+        )
+        for label, metrics in rows
+    ]
+    headers = (
+        "strategy",
+        "sample",
+        "hit%",
+        "expectancy",
+        "profit_factor",
+        "max_dd",
+        "total",
+        "t_stat",
+    )
+    widths = [
+        max(len(headers[index]), *(len(row[index]) for row in table_rows))
+        for index in range(len(headers))
+    ]
+    lines = [
+        (
+            f"{headers[0]:<{widths[0]}}  {headers[1]:>{widths[1]}}  "
+            f"{headers[2]:>{widths[2]}}  {headers[3]:>{widths[3]}}  "
+            f"{headers[4]:>{widths[4]}}  {headers[5]:>{widths[5]}}  "
+            f"{headers[6]:>{widths[6]}}  {headers[7]:>{widths[7]}}"
+        )
+    ]
+    for row in table_rows:
+        lines.append(
+            (
+                f"{row[0]:<{widths[0]}}  {row[1]:>{widths[1]}}  "
+                f"{row[2]:>{widths[2]}}  {row[3]:>{widths[3]}}  "
+                f"{row[4]:>{widths[4]}}  {row[5]:>{widths[5]}}  "
+                f"{row[6]:>{widths[6]}}  {row[7]:>{widths[7]}}"
             )
         )
     return "\n".join(lines)
