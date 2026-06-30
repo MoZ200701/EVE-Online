@@ -827,7 +827,7 @@ _(Append new entries below — next: P3-1 (after planner scopes it). P3-0e/P3-0d
 - Verification: PASS; hand-worked feature values, explicit prefix-equality leakage invariant, warmup `None`s, calendar fields, flat-price/zero-volume/nonpositive-average guards, empty input, invalid window `ValueError` paths covered. Module is stdlib-only; no `evemarket` imports/no Config/store/I-O/model.
 - Deviations: used bundled Python abs path; bare `python` known unavailable. `realized_vol` returns `None` when fewer than two valid returns exist, so `short_window=1` has no sample stdev. Removed fresh `.pytest-tmp-p31a*`; pre-existing permission-denied temp dirs remain unstaged.
 - Questions: none.
-- Commit: pending.
+- Commit: `b5badce`.
 
 ### P3-0e - backtest CLI + baseline-comparison report - 2026-06-30 - COMPLETE
 - Files: `src/evemarket/cli.py`, `tests/test_cli_backtest.py`, `HANDOFF.md`.
