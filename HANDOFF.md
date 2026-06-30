@@ -754,7 +754,7 @@ _(Append new entries below — next: P3-0e. P3-0d/P3-0c/P3-0b/P3-0a entries are 
 - Verification: PASS; no-history `Points: 0` empty state; rising-series baseline report; hold-ISK reference + clearing-floor verdict; naive-persistence `sample 0` abstention not clearing; warmup/season precondition exit 2; non-default `--region`/`--type` resolution covered.
 - Deviations: used bundled Python abs path; bare `python` known unavailable. Added `Sequence`, `PricePoint`, `Forecast` imports solely for mypy protocol match. Removed fresh `.pytest-tmp-p30e*`; pre-existing permission-denied temp dirs remain unstaged.
 - Questions: none.
-- Commit: `977f788`.
+- Commit: `ff35571`.
 
 ### M6 — deterministic broker fee + sales tax — 2026-06-28 — COMPLETE
 - Files: `src/evemarket/analytics/fees.py`, `tests/test_fees.py`, `HANDOFF.md`.
