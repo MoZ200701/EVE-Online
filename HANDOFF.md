@@ -887,7 +887,7 @@ _(Append new entries below — next: P3-1b (`read_history_bars` reader). P3-1a/P
 - Verification: PASS; ascending-by-date full-column `HistoryBar` mapping, explicit float/int casts, `average IS NULL` exclusion, unknown type/region/empty db empty, and returned bars feeding `compute_features(..., short_window=2, long_window=3)` covered.
 - Deviations: used bundled Python abs path; bare `python` known unavailable. Removed fresh `.pytest-tmp-p31b*`; pre-existing permission-denied temp dirs remain unstaged.
 - Questions: none.
-- Commit: pending.
+- Commit: `9fd0a37`.
 
 ### P3-1a - point-in-time feature leaf - 2026-06-30 - COMPLETE
 - Files: `src/evemarket/analytics/features.py`, `tests/test_features.py`, `HANDOFF.md`.
