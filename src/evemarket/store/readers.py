@@ -8,6 +8,7 @@ from pathlib import Path
 import duckdb
 
 from evemarket.analytics.backtest import PricePoint
+from evemarket.analytics.features import HistoryBar
 from evemarket.analytics.haul import HaulQuote
 from evemarket.analytics.station_trade import MarketQuote
 from evemarket.config import Config
@@ -155,6 +156,41 @@ def read_price_series(
     return [
         PricePoint(date=row_date.isoformat(), price=float(average))
         for row_date, average in rows
+    ]
+
+
+def read_history_bars(
+    config: Config,
+    region_id: int,
+    type_id: int,
+) -> list[HistoryBar]:
+    """Read chronological daily history bars for one region/type."""
+    data_dir = config.data_dir.expanduser()
+    market_path = data_dir / "market.duckdb"
+
+    with ensure_market_db(market_path) as connection:
+        rows = connection.execute(
+            f"""
+            SELECT date, average, highest, lowest, order_count, volume
+            FROM {MARKET_HISTORY_TABLE}
+            WHERE region_id = ?
+              AND type_id = ?
+              AND average IS NOT NULL
+            ORDER BY date ASC
+            """,
+            [region_id, type_id],
+        ).fetchall()
+
+    return [
+        HistoryBar(
+            date=row_date.isoformat(),
+            average=float(average),
+            highest=float(highest),
+            lowest=float(lowest),
+            order_count=int(order_count),
+            volume=int(volume),
+        )
+        for row_date, average, highest, lowest, order_count, volume in rows
     ]
 
 

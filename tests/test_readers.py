@@ -4,12 +4,18 @@ from pathlib import Path
 import duckdb
 import pytest
 
+from evemarket.analytics.features import HistoryBar, compute_features
 from evemarket.analytics.backtest import PricePoint, naive_persistence_forecast
 from evemarket.analytics.haul import scan_haul_opportunities
 from evemarket.analytics.station_trade import scan_station_trades
 from evemarket.analytics.walkforward import run_forecaster_backtest
 from evemarket.config import Config
-from evemarket.store.readers import read_haul_quotes, read_price_series, read_station_quotes
+from evemarket.store.readers import (
+    read_haul_quotes,
+    read_history_bars,
+    read_price_series,
+    read_station_quotes,
+)
 from evemarket.store.schema import ensure_market_db
 from evemarket.store.writers import record_ingest_run, write_orders_snapshot
 
@@ -342,6 +348,102 @@ def test_read_price_series_feeds_walkforward_engine(tmp_path: Path) -> None:
     )
 
     assert outcomes == []
+
+
+def test_read_history_bars_returns_chronological_full_columns(tmp_path: Path) -> None:
+    _write_price_history(
+        tmp_path,
+        [
+            (REGION_ID, 34, date(2026, 1, 3), 130.0, 150.0, 100.0, 13, 3000),
+            (REGION_ID, 34, date(2026, 1, 1), 110.0, 140.0, 90.0, 11, 1000),
+            (REGION_ID, 34, date(2026, 1, 2), 120.0, 145.0, 95.0, 12, 2000),
+        ],
+    )
+
+    bars = read_history_bars(Config(data_dir=tmp_path), REGION_ID, 34)
+
+    assert bars == [
+        HistoryBar(
+            date="2026-01-01",
+            average=110.0,
+            highest=140.0,
+            lowest=90.0,
+            order_count=11,
+            volume=1000,
+        ),
+        HistoryBar(
+            date="2026-01-02",
+            average=120.0,
+            highest=145.0,
+            lowest=95.0,
+            order_count=12,
+            volume=2000,
+        ),
+        HistoryBar(
+            date="2026-01-03",
+            average=130.0,
+            highest=150.0,
+            lowest=100.0,
+            order_count=13,
+            volume=3000,
+        ),
+    ]
+    assert isinstance(bars[0].average, float)
+    assert isinstance(bars[0].highest, float)
+    assert isinstance(bars[0].lowest, float)
+    assert isinstance(bars[0].order_count, int)
+    assert isinstance(bars[0].volume, int)
+
+
+def test_read_history_bars_excludes_null_average_rows(tmp_path: Path) -> None:
+    _write_price_history(
+        tmp_path,
+        [
+            (REGION_ID, 34, date(2026, 1, 1), 110.0, 140.0, 90.0, 11, 1000),
+            (REGION_ID, 34, date(2026, 1, 2), None, 145.0, 95.0, 12, 2000),
+            (REGION_ID, 34, date(2026, 1, 3), 130.0, 150.0, 100.0, 13, 3000),
+        ],
+    )
+
+    bars = read_history_bars(Config(data_dir=tmp_path), REGION_ID, 34)
+
+    assert [bar.date for bar in bars] == ["2026-01-01", "2026-01-03"]
+    assert [bar.average for bar in bars] == [110.0, 130.0]
+
+
+def test_read_history_bars_returns_empty_for_unknown_type_region_and_empty_db(
+    tmp_path: Path,
+) -> None:
+    _write_price_history(
+        tmp_path,
+        [(REGION_ID, 34, date(2026, 1, 1), 110.0, 140.0, 90.0, 11, 1000)],
+    )
+    empty_dir = tmp_path / "empty"
+    empty_dir.mkdir()
+    with ensure_market_db(empty_dir / "market.duckdb"):
+        pass
+
+    assert read_history_bars(Config(data_dir=tmp_path), REGION_ID, 99999) == []
+    assert read_history_bars(Config(data_dir=tmp_path), DEST_REGION_ID, 34) == []
+    assert read_history_bars(Config(data_dir=empty_dir), REGION_ID, 34) == []
+
+
+def test_read_history_bars_feeds_feature_computation(tmp_path: Path) -> None:
+    _write_price_history(
+        tmp_path,
+        [
+            (REGION_ID, 34, date(2026, 1, 1), 110.0, 140.0, 90.0, 11, 1000),
+            (REGION_ID, 34, date(2026, 1, 2), 120.0, 145.0, 95.0, 12, 2000),
+            (REGION_ID, 34, date(2026, 1, 3), 130.0, 150.0, 100.0, 13, 3000),
+        ],
+    )
+
+    bars = read_history_bars(Config(data_dir=tmp_path), REGION_ID, 34)
+    rows = compute_features(bars, short_window=2, long_window=3)
+
+    assert len(rows) == len(bars)
+    assert rows[-1].date == "2026-01-03"
+    assert rows[-1].price_zscore is not None
 
 
 def _write_snapshot(
